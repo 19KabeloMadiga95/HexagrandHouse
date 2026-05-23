@@ -1,0 +1,1013 @@
+/* =========================================================
+   HEXAGRANDHOUSE MAIN THEME
+========================================================= */
+
+:root {
+
+    --hgh-bg-primary: #040b14;
+    --hgh-bg-secondary: #07111f;
+    --hgh-bg-card: #0b1728;
+
+    --hgh-border: rgba(255,255,255,0.08);
+
+    --hgh-text: #f5f7fb;
+    --hgh-muted: #9db0ca;
+
+    --hgh-gold: #ffbf00;
+    --hgh-gold-soft: #d4af37;
+
+    --hgh-green: #00e676;
+    --hgh-red: #ff5c5c;
+    --hgh-blue: #4da3ff;
+}
+
+
+/* =========================================================
+   GLOBAL
+========================================================= */
+
+html,
+body,
+[data-testid="stAppViewContainer"] {
+
+    background:
+        linear-gradient(
+            180deg,
+            #030812 0%,
+            #050d18 100%
+        );
+
+    color: var(--hgh-text);
+}
+
+[data-testid="stHeader"] {
+    background: transparent;
+}
+
+.block-container {
+    padding-top: 1.2rem;
+    padding-bottom: 4rem;
+}
+
+
+/* =========================================================
+   SIDEBAR
+========================================================= */
+
+[data-testid="stSidebar"] {
+
+    background:
+        linear-gradient(
+            180deg,
+            #081221 0%,
+            #0b1730 100%
+        );
+
+    border-right: 1px solid rgba(255,255,255,0.05);
+}
+
+[data-testid="stSidebar"] * {
+    color: white;
+}
+
+
+/* =========================================================
+   TABS
+========================================================= */
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 18px;
+}
+
+.stTabs [data-baseweb="tab"] {
+
+    color: var(--hgh-muted);
+
+    font-weight: 700;
+
+    border-bottom: 2px solid transparent;
+}
+
+.stTabs [aria-selected="true"] {
+
+    color: var(--hgh-gold);
+
+    border-bottom: 2px solid var(--hgh-gold);
+}
+
+
+/* =========================================================
+   DATAFRAMES
+========================================================= */
+
+[data-testid="stDataFrame"] {
+
+    border: 1px solid rgba(255,255,255,0.06);
+
+    border-radius: 14px;
+
+    overflow: hidden;
+}
+
+
+/* =========================================================
+   SELECT BOXES
+========================================================= */
+
+.stSelectbox > div > div {
+
+    background-color: #0a1730;
+
+    border: 1px solid rgba(255,255,255,0.06);
+
+    border-radius: 12px;
+
+    color: white;
+}
+
+
+/* =========================================================
+   KPI CARDS
+========================================================= */
+
+.hgh-kpi-card {
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(12, 20, 36, 0.95),
+            rgba(7, 12, 20, 0.95)
+        );
+
+    border: 1px solid rgba(255,255,255,0.06);
+
+    border-radius: 18px;
+
+    padding: 18px;
+
+    margin-bottom: 18px;
+}
+
+.hgh-kpi-title {
+
+    color: var(--hgh-muted);
+
+    font-size: 0.82rem;
+
+    margin-bottom: 8px;
+}
+
+.hgh-kpi-value {
+
+    color: white;
+
+    font-size: 2rem;
+
+    font-weight: 800;
+
+    margin-bottom: 6px;
+}
+
+.hgh-kpi-sub {
+
+    color: var(--hgh-muted);
+
+    font-size: 0.82rem;
+}
+
+
+/* =========================================================
+   SECTION CARDS
+========================================================= */
+
+.hgh-section-card {
+
+    background:
+        linear-gradient(
+            145deg,
+            rgba(11, 18, 32, 0.95),
+            rgba(6, 10, 16, 0.95)
+        );
+
+    border: 1px solid rgba(255,255,255,0.06);
+
+    border-radius: 18px;
+
+    padding: 22px;
+
+    margin-bottom: 18px;
+}
+
+.hgh-section-title {
+
+    color: white;
+
+    font-size: 1.1rem;
+
+    font-weight: 800;
+
+    margin-bottom: 12px;
+}
+
+.hgh-section-text {
+
+    color: var(--hgh-muted);
+
+    line-height: 1.7;
+}
+
+
+/* =========================================================
+   PREMIUM HERO
+========================================================= */
+
+.hgh-premium-hero {
+
+    display: flex;
+
+    justify-content: space-between;
+
+    gap: 40px;
+
+    padding: 48px;
+
+    border-radius: 24px;
+
+    background:
+        radial-gradient(
+            circle at top left,
+            rgba(255, 180, 0, 0.08),
+            transparent 40%
+        ),
+        linear-gradient(
+            135deg,
+            #07111f 0%,
+            #091829 100%
+        );
+
+    border: 1px solid rgba(255, 180, 0, 0.18);
+
+    margin-bottom: 20px;
+}
+
+.hgh-premium-hero-small {
+
+    padding: 36px;
+
+    border-radius: 22px;
+
+    background:
+        linear-gradient(
+            135deg,
+            #07111f 0%,
+            #091829 100%
+        );
+
+    border: 1px solid rgba(255, 180, 0, 0.15);
+
+    margin-bottom: 20px;
+}
+
+.hgh-hero-left {
+    flex: 1;
+}
+
+.hgh-hero-right {
+
+    width: 320px;
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: center;
+}
+
+.hgh-hero-kicker {
+
+    color: var(--hgh-gold);
+
+    font-size: 12px;
+
+    font-weight: 700;
+
+    letter-spacing: 2px;
+
+    margin-bottom: 18px;
+}
+
+.hgh-hero-title {
+
+    font-size: 54px;
+
+    line-height: 1.1;
+
+    font-weight: 800;
+
+    color: white;
+
+    margin-bottom: 18px;
+}
+
+.hgh-hero-title span {
+    color: var(--hgh-gold);
+}
+
+.hgh-hero-title-small {
+
+    font-size: 38px;
+
+    line-height: 1.2;
+
+    font-weight: 800;
+
+    color: white;
+
+    margin-bottom: 14px;
+}
+
+.hgh-hero-subtitle {
+
+    color: #c7d2e3;
+
+    font-size: 18px;
+
+    line-height: 1.7;
+
+    max-width: 720px;
+
+    margin-bottom: 28px;
+}
+
+.hgh-hero-subtitle-small {
+
+    color: #c7d2e3;
+
+    font-size: 16px;
+
+    line-height: 1.7;
+
+    max-width: 800px;
+}
+
+.hgh-hero-actions {
+
+    display: flex;
+
+    gap: 16px;
+}
+
+.hgh-hero-button-primary {
+
+    padding: 12px 24px;
+
+    border-radius: 999px;
+
+    background: var(--hgh-gold);
+
+    color: black;
+
+    font-weight: 700;
+
+    font-size: 14px;
+}
+
+.hgh-hero-button-secondary {
+
+    padding: 12px 24px;
+
+    border-radius: 999px;
+
+    border: 1px solid rgba(255,255,255,0.2);
+
+    color: white;
+
+    font-weight: 700;
+
+    font-size: 14px;
+}
+
+.hgh-glow-card {
+
+    width: 100%;
+
+    padding: 28px;
+
+    border-radius: 20px;
+
+    background:
+        linear-gradient(
+            135deg,
+            rgba(255,191,0,0.12),
+            rgba(255,191,0,0.03)
+        );
+
+    border: 1px solid rgba(255,191,0,0.25);
+
+    box-shadow:
+        0 0 40px rgba(255,191,0,0.08);
+}
+
+.hgh-glow-card-title {
+
+    color: var(--hgh-gold);
+
+    font-size: 12px;
+
+    font-weight: 700;
+
+    margin-bottom: 12px;
+
+    letter-spacing: 1px;
+}
+
+.hgh-glow-card-main {
+
+    font-size: 28px;
+
+    font-weight: 800;
+
+    color: white;
+
+    margin-bottom: 12px;
+}
+
+.hgh-glow-card-sub {
+
+    color: #c7d2e3;
+
+    font-size: 14px;
+
+    line-height: 1.7;
+}
+
+
+/* =========================================================
+   PRODUCT CARDS
+========================================================= */
+
+.hgh-product-card {
+
+    padding: 32px;
+
+    border-radius: 22px;
+
+    background:
+        linear-gradient(
+            135deg,
+            #081221 0%,
+            #0a1830 100%
+        );
+
+    border: 1px solid rgba(255,255,255,0.06);
+
+    transition: all 0.25s ease;
+
+    min-height: 260px;
+}
+
+.hgh-product-card:hover {
+
+    transform: translateY(-4px);
+
+    border-color: rgba(255,191,0,0.35);
+
+    box-shadow:
+        0 10px 30px rgba(0,0,0,0.35);
+}
+
+.hgh-product-icon {
+
+    font-size: 42px;
+
+    margin-bottom: 18px;
+}
+
+.hgh-product-title {
+
+    color: white;
+
+    font-size: 28px;
+
+    font-weight: 800;
+
+    margin-bottom: 14px;
+}
+
+.hgh-product-text {
+
+    color: #c7d2e3;
+
+    line-height: 1.7;
+
+    margin-bottom: 22px;
+}
+
+.hgh-product-tags {
+
+    display: flex;
+
+    flex-wrap: wrap;
+
+    gap: 10px;
+}
+
+.hgh-product-tags span {
+
+    padding: 8px 14px;
+
+    border-radius: 999px;
+
+    background: rgba(255,191,0,0.1);
+
+    border: 1px solid rgba(255,191,0,0.18);
+
+    color: var(--hgh-gold);
+
+    font-size: 12px;
+
+    font-weight: 700;
+}
+
+
+/* =========================================================
+   RESPONSIBLE PLAY PANEL
+========================================================= */
+
+.hgh-responsible-panel {
+
+    padding: 30px;
+
+    border-radius: 20px;
+
+    background:
+        linear-gradient(
+            135deg,
+            #081221,
+            #0a1830
+        );
+
+    border: 1px solid rgba(255,255,255,0.06);
+}
+
+.hgh-responsible-title {
+
+    font-size: 24px;
+
+    font-weight: 800;
+
+    color: white;
+
+    margin-bottom: 20px;
+}
+
+.hgh-responsible-list {
+
+    padding-left: 18px;
+
+    color: #d4ddeb;
+
+    line-height: 2;
+}
+
+
+/* =========================================================
+   FOOTBALL PREDICTION CARDS
+========================================================= */
+
+.hgh-football-card {
+
+    background:
+        radial-gradient(
+            circle at top left,
+            rgba(212, 175, 55, 0.14),
+            transparent 34%
+        ),
+        linear-gradient(
+            145deg,
+            rgba(13, 19, 28, 0.98),
+            rgba(6, 10, 16, 0.98)
+        );
+
+    border: 1px solid rgba(212, 175, 55, 0.45);
+
+    border-radius: 18px;
+
+    padding: 18px 20px;
+
+    margin-bottom: 18px;
+
+    box-shadow:
+        0 18px 45px rgba(0, 0, 0, 0.35);
+}
+
+.hgh-card-topline {
+
+    display: flex;
+
+    align-items: center;
+
+    justify-content: space-between;
+
+    gap: 14px;
+
+    margin-bottom: 14px;
+}
+
+.hgh-card-league {
+
+    color: var(--hgh-gold-soft);
+
+    font-weight: 900;
+
+    font-size: 0.74rem;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.08em;
+
+    margin-right: 10px;
+}
+
+.hgh-card-date {
+
+    color: var(--hgh-muted);
+
+    font-size: 0.72rem;
+}
+
+.hgh-card-badge {
+
+    display: inline-flex;
+
+    align-items: center;
+
+    border: 1px solid rgba(212, 175, 55, 0.45);
+
+    color: var(--hgh-gold-soft);
+
+    border-radius: 999px;
+
+    padding: 4px 9px;
+
+    font-size: 0.65rem;
+
+    font-weight: 900;
+
+    letter-spacing: 0.06em;
+
+    margin-left: 6px;
+}
+
+.hgh-card-badge-elite {
+
+    border-color: rgba(255, 92, 92, 0.85);
+
+    color: #ff6b6b;
+
+    background: rgba(255, 92, 92, 0.10);
+}
+
+.hgh-card-match {
+
+    display: grid;
+
+    grid-template-columns: 1fr auto 1fr;
+
+    align-items: center;
+
+    gap: 14px;
+
+    margin: 16px 0;
+}
+
+.hgh-card-team {
+
+    color: var(--hgh-text);
+
+    font-weight: 950;
+
+    font-size: 1.25rem;
+
+    line-height: 1.2;
+}
+
+.hgh-card-team:last-child {
+    text-align: right;
+}
+
+.hgh-card-vs {
+
+    color: var(--hgh-gold-soft);
+
+    border: 1px solid rgba(212, 175, 55, 0.45);
+
+    border-radius: 999px;
+
+    padding: 5px 10px;
+
+    font-weight: 950;
+
+    font-size: 0.68rem;
+}
+
+.hgh-card-mainpick {
+
+    display: flex;
+
+    justify-content: space-between;
+
+    align-items: center;
+
+    background: rgba(212, 175, 55, 0.08);
+
+    border: 1px solid rgba(212, 175, 55, 0.18);
+
+    border-radius: 14px;
+
+    padding: 14px;
+
+    margin-bottom: 14px;
+}
+
+.hgh-card-label {
+
+    color: var(--hgh-muted);
+
+    font-size: 0.66rem;
+
+    text-transform: uppercase;
+
+    letter-spacing: 0.08em;
+
+    margin-bottom: 4px;
+}
+
+.hgh-card-pick {
+
+    color: var(--hgh-text);
+
+    font-weight: 950;
+
+    font-size: 1rem;
+}
+
+.hgh-card-confidence {
+
+    font-weight: 950;
+
+    font-size: 1.45rem;
+}
+
+.hgh-card-grid {
+
+    display: grid;
+
+    grid-template-columns: repeat(4, 1fr);
+
+    gap: 10px;
+}
+
+.hgh-card-mini {
+
+    background: rgba(15, 23, 42, 0.72);
+
+    border: 1px solid rgba(148, 163, 184, 0.14);
+
+    border-radius: 13px;
+
+    padding: 11px;
+
+    min-height: 92px;
+}
+
+.hgh-card-mini-value {
+
+    color: var(--hgh-text);
+
+    font-weight: 900;
+
+    font-size: 0.86rem;
+
+    line-height: 1.2;
+
+    min-height: 34px;
+}
+
+.hgh-card-mini-prob {
+
+    font-weight: 950;
+
+    font-size: 1.02rem;
+
+    margin-top: 5px;
+}
+
+
+/* =========================================================
+   FOOTBALL PROGRESS BARS
+========================================================= */
+
+.hgh-progress-wrap {
+    margin-top: 8px;
+}
+
+.hgh-progress-track {
+
+    width: 100%;
+
+    height: 8px;
+
+    border-radius: 999px;
+
+    background: rgba(255, 255, 255, 0.06);
+
+    overflow: hidden;
+}
+
+.hgh-progress-fill {
+
+    height: 100%;
+
+    border-radius: 999px;
+
+    transition: width 0.4s ease;
+}
+
+
+/* =========================================================
+   FOOTER
+========================================================= */
+
+.hgh-footer-note {
+
+    text-align: center;
+
+    color: #93a4bd;
+
+    font-size: 13px;
+
+    padding: 20px;
+}
+
+
+/* =========================================================
+   MOBILE
+========================================================= */
+
+@media (max-width: 900px) {
+
+    .hgh-premium-hero {
+        flex-direction: column;
+    }
+
+    .hgh-hero-right {
+        width: 100%;
+    }
+
+    .hgh-card-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .hgh-card-match {
+        grid-template-columns: 1fr;
+        text-align: left;
+    }
+
+    .hgh-card-team:last-child {
+        text-align: left;
+    }
+
+    .hgh-card-vs {
+        width: fit-content;
+    }
+}
+
+/* =========================================================
+   LOTTERY PREDICTION CARDS
+========================================================= */
+
+.hgh-lotto-card {
+    background:
+        radial-gradient(circle at top left, rgba(255, 191, 0, 0.12), transparent 35%),
+        linear-gradient(145deg, rgba(13, 19, 28, 0.98), rgba(6, 10, 16, 0.98));
+
+    border: 1px solid rgba(255, 191, 0, 0.35);
+    border-radius: 20px;
+
+    padding: 22px;
+    margin-bottom: 18px;
+
+    box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+}
+
+.hgh-lotto-topline {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+
+    margin-bottom: 18px;
+}
+
+.hgh-lotto-game {
+    color: var(--hgh-gold);
+    font-size: 0.78rem;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.hgh-lotto-subtitle {
+    color: var(--hgh-muted);
+    font-size: 0.8rem;
+    margin-top: 4px;
+}
+
+.hgh-lotto-rank {
+    color: black;
+    background: var(--hgh-gold);
+
+    border-radius: 999px;
+    padding: 7px 12px;
+
+    font-weight: 900;
+    font-size: 0.8rem;
+}
+
+.hgh-lotto-numbers {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+
+    gap: 12px;
+
+    margin-bottom: 20px;
+}
+
+.hgh-lotto-ball {
+    width: 46px;
+    height: 46px;
+
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+
+    border-radius: 50%;
+
+    background:
+        radial-gradient(circle at 30% 25%, #ffffff, #d8dee8 45%, #8b96a8);
+
+    color: #111827;
+
+    font-weight: 950;
+    font-size: 1rem;
+
+    box-shadow:
+        inset 0 2px 4px rgba(255,255,255,0.8),
+        0 8px 18px rgba(0,0,0,0.35);
+}
+
+.hgh-lotto-ball-bonus {
+    background:
+        radial-gradient(circle at 30% 25%, #ffd966, #ffbf00 48%, #a66a00);
+
+    color: black;
+}
+
+.hgh-lotto-bonus-label {
+    color: var(--hgh-gold);
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    margin-left: 6px;
+}
+
+.hgh-lotto-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+}
+
+.hgh-lotto-metric {
+    background: rgba(15, 23, 42, 0.72);
+    border: 1px solid rgba(148, 163, 184, 0.14);
+
+    border-radius: 14px;
+    padding: 12px;
+}
+
+.hgh-lotto-metric span {
+    display: block;
+
+    color: var(--hgh-muted);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+
+    margin-bottom: 5px;
+}
+
+.hgh-lotto-metric strong {
+    color: white;
+    font-size: 1rem;
+}
