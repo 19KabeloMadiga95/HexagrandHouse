@@ -76,7 +76,7 @@ MODEL_FILE = (
 )
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def safe_read_excel(path, sheet_name=0):
     try:
         return pd.read_excel(
