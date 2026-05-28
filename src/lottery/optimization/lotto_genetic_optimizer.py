@@ -7,10 +7,6 @@ import numpy as np
 import pandas as pd
 
 
-# =========================================================
-# PROJECT PATHS
-# =========================================================
-
 BASE_DIR = Path(__file__).resolve().parents[3]
 
 FEATURES_FILE = (
@@ -34,17 +30,15 @@ OUTPUT_FILE = (
 )
 
 
-# =========================================================
-# CONFIG
-# =========================================================
-
 REGULAR_RANGE = range(1, 59)
 BONUS_RANGE = range(1, 59)
 
-POPULATION_SIZE = 250
-GENERATIONS = 60
+POST_EXPANSION_DATE = pd.Timestamp("2025-09-01")
 
-MUTATION_RATE = 0.18
+POPULATION_SIZE = 300
+GENERATIONS = 70
+
+MUTATION_RATE = 0.22
 ELITE_RATIO = 0.12
 
 TARGET_POPULATION = 120
@@ -52,10 +46,13 @@ TARGET_POPULATION = 120
 RNG_SEED = 42
 _rng = np.random.default_rng(RNG_SEED)
 
+RANGE_BUCKETS = {
+    "LOW": range(1, 15),
+    "MID_LOW": range(15, 30),
+    "MID_HIGH": range(30, 45),
+    "HIGH": range(45, 59),
+}
 
-# =========================================================
-# LOAD DATA
-# =========================================================
 
 def load_lotto_features():
     if not FEATURES_FILE.exists():
@@ -102,9 +99,15 @@ def load_lotto_features():
     return df
 
 
-# =========================================================
-# HELPERS
-# =========================================================
+def era_weight(draw_date):
+    if pd.isna(draw_date):
+        return 0.50
+
+    if draw_date >= POST_EXPANSION_DATE:
+        return 3.0
+
+    return 0.45
+
 
 def get_regular_numbers(row):
     return [
@@ -133,7 +136,6 @@ def count_odd_even(numbers):
 
 def count_consecutive(numbers):
     numbers = sorted(numbers)
-
     count = 0
 
     for i in range(len(numbers) - 1):
@@ -149,9 +151,7 @@ def number_entropy(numbers):
     gaps = []
 
     for i in range(len(numbers) - 1):
-        gaps.append(
-            numbers[i + 1] - numbers[i]
-        )
+        gaps.append(numbers[i + 1] - numbers[i])
 
     if not gaps:
         return 0
@@ -159,16 +159,67 @@ def number_entropy(numbers):
     return np.std(gaps)
 
 
-# =========================================================
-# LEARNING
-# =========================================================
+def count_bucket_numbers(numbers):
+    bucket_counts = {}
+
+    for bucket_name, bucket_range in RANGE_BUCKETS.items():
+        bucket_set = set(bucket_range)
+        bucket_counts[bucket_name] = sum(1 for n in numbers if n in bucket_set)
+
+    return bucket_counts
+
+
+def bucket_balance_score(numbers):
+    bucket_counts = count_bucket_numbers(numbers)
+
+    occupied_buckets = sum(1 for count in bucket_counts.values() if count > 0)
+    max_bucket_count = max(bucket_counts.values())
+
+    score = 0
+
+    score += occupied_buckets * 5
+
+    if max_bucket_count <= 3:
+        score += 8
+
+    if bucket_counts["HIGH"] >= 1:
+        score += 12
+
+    if bucket_counts["HIGH"] >= 2:
+        score += 10
+
+    if bucket_counts["LOW"] >= 1 and bucket_counts["HIGH"] >= 1:
+        score += 6
+
+    return score
+
+
+def upper_range_score(numbers):
+    count_50_plus = sum(1 for n in numbers if n >= 50)
+    count_53_plus = sum(1 for n in numbers if n >= 53)
+
+    score = 0
+
+    if count_50_plus >= 1:
+        score += 12
+
+    if count_50_plus >= 2:
+        score += 10
+
+    if count_53_plus >= 1:
+        score += 7
+
+    return score
+
 
 def build_frequency_scores(df):
     counter = Counter()
 
     for _, row in df.iterrows():
+        weight = era_weight(row["DrawDate"])
+
         for n in get_regular_numbers(row):
-            counter[n] += 1
+            counter[n] += weight
 
     return counter
 
@@ -177,12 +228,11 @@ def build_pair_scores(df):
     pair_counter = Counter()
 
     for _, row in df.iterrows():
-        nums = sorted(
-            get_regular_numbers(row)
-        )
+        weight = era_weight(row["DrawDate"])
+        nums = sorted(get_regular_numbers(row))
 
         for pair in combinations(nums, 2):
-            pair_counter[pair] += 1
+            pair_counter[pair] += weight
 
     return pair_counter
 
@@ -199,16 +249,10 @@ def build_history_sets(df):
     history = []
 
     for _, row in df.iterrows():
-        history.append(
-            set(get_regular_numbers(row))
-        )
+        history.append(set(get_regular_numbers(row)))
 
     return history
 
-
-# =========================================================
-# GENOME
-# =========================================================
 
 def random_genome():
     regulars = sorted(
@@ -237,10 +281,6 @@ def random_genome():
     }
 
 
-# =========================================================
-# FITNESS
-# =========================================================
-
 def fitness_score(
     genome,
     freq_counter,
@@ -249,11 +289,9 @@ def fitness_score(
     history_sets,
 ):
     regulars = genome["regulars"]
-    bonus = genome["bonus"]
 
     score = 0
 
-    # Frequency balance
     freq_values = [
         freq_counter[n]
         for n in regulars
@@ -261,72 +299,67 @@ def fitness_score(
 
     avg_freq = np.mean(freq_values)
 
-    score += avg_freq * 0.6
+    score += avg_freq * 0.35
 
-    # High / low
     high, low = count_high_low(regulars)
 
     if (high, low) in [(3, 3), (4, 2), (2, 4)]:
-        score += 10
+        score += 8
 
-    # Odd / even
     odd, even = count_odd_even(regulars)
 
     if (odd, even) in [(3, 3), (4, 2), (2, 4)]:
-        score += 10
+        score += 8
 
-    # Sum balance
     total = sum(regulars)
 
-    if 110 <= total <= 220:
-        score += 12
+    if 130 <= total <= 230:
+        score += 14
 
-    elif 90 <= total <= 240:
-        score += 6
+    elif 105 <= total <= 260:
+        score += 8
 
-    # Consecutives
+    elif 90 <= total <= 285:
+        score += 3
+
     consecutive = count_consecutive(regulars)
 
     if consecutive == 0:
         score += 8
 
     elif consecutive == 1:
-        score += 4
+        score += 5
 
     elif consecutive >= 3:
         score -= 12
 
-    # Entropy
     entropy = number_entropy(regulars)
+    score += entropy * 2.8
 
-    score += entropy * 2.5
+    bucket_score = bucket_balance_score(regulars)
+    score += bucket_score * 1.4
 
-    # Pair scoring
+    upper_score = upper_range_score(regulars)
+    score += upper_score * 1.7
+
     pair_score = 0
 
-    for pair in combinations(
-        sorted(regulars),
-        2
-    ):
+    for pair in combinations(sorted(regulars), 2):
         pair_score += pair_counter[pair]
 
-    score += pair_score * 0.04
+    score += pair_score * 0.025
 
-    # Anti-crowding
     hot_overlap = sum(
         1 for n in regulars
         if n in hot_numbers
     )
 
-    score -= hot_overlap * 2
+    score -= hot_overlap * 1.2
 
-    # Historical duplication
     regular_set = set(regulars)
 
     for hist in history_sets:
-        overlap = len(
-            regular_set.intersection(hist)
-        )
+        overlap = len(regular_set.intersection(hist))
 
         if overlap >= 6:
             score -= 120
@@ -334,15 +367,10 @@ def fitness_score(
         elif overlap == 5:
             score -= 20
 
-    # Bonus
     score += 1
 
     return score
 
-
-# =========================================================
-# EVOLUTION
-# =========================================================
 
 def mutate(genome):
     genome = {
@@ -362,21 +390,15 @@ def mutate(genome):
             _rng.choice(available)
         )
 
-        genome["regulars"] = sorted(
-            list(set(genome["regulars"]))
-        )
+        genome["regulars"] = sorted(list(set(genome["regulars"])))
 
         while len(genome["regulars"]) < 6:
-            candidate = int(
-                _rng.choice(list(REGULAR_RANGE))
-            )
+            candidate = int(_rng.choice(list(REGULAR_RANGE)))
 
             if candidate not in genome["regulars"]:
                 genome["regulars"].append(candidate)
 
-        genome["regulars"] = sorted(
-            genome["regulars"]
-        )
+        genome["regulars"] = sorted(genome["regulars"])
 
     if _rng.random() < MUTATION_RATE:
         bonus_pool = [
@@ -384,9 +406,7 @@ def mutate(genome):
             if n not in genome["regulars"]
         ]
 
-        genome["bonus"] = int(
-            _rng.choice(bonus_pool)
-        )
+        genome["bonus"] = int(_rng.choice(bonus_pool))
 
     return genome
 
@@ -401,11 +421,7 @@ def crossover(parent1, parent2):
 
     if len(combined) < 6:
         while len(combined) < 6:
-            candidate = int(
-                _rng.choice(
-                    list(REGULAR_RANGE)
-                )
-            )
+            candidate = int(_rng.choice(list(REGULAR_RANGE)))
 
             if candidate not in combined:
                 combined.append(candidate)
@@ -431,9 +447,7 @@ def crossover(parent1, parent2):
             if n not in regulars
         ]
 
-        bonus = int(
-            _rng.choice(bonus_pool)
-        )
+        bonus = int(_rng.choice(bonus_pool))
 
     child = {
         "regulars": regulars,
@@ -442,10 +456,6 @@ def crossover(parent1, parent2):
 
     return mutate(child)
 
-
-# =========================================================
-# MAIN OPTIMIZER
-# =========================================================
 
 def run_lotto_genetic_optimizer():
     df = load_lotto_features()
@@ -463,10 +473,11 @@ def run_lotto_genetic_optimizer():
     generation_rows = []
 
     print("\n======================================")
-    print("LOTTO GENETIC OPTIMIZER")
+    print("LOTTO GENETIC OPTIMIZER V2")
     print("======================================")
     print(f"Population Size : {POPULATION_SIZE}")
     print(f"Generations     : {GENERATIONS}")
+    print("Mode            : Range-balanced 1-58")
     print("======================================\n")
 
     for generation in range(1, GENERATIONS + 1):
@@ -512,10 +523,7 @@ def run_lotto_genetic_optimizer():
                 f"Avg Score: {avg_score:.2f}"
             )
 
-        elite_count = int(
-            POPULATION_SIZE * ELITE_RATIO
-        )
-
+        elite_count = int(POPULATION_SIZE * ELITE_RATIO)
         elites = scored_population[:elite_count]
 
         next_population = [
@@ -527,10 +535,7 @@ def run_lotto_genetic_optimizer():
             parent1 = _rng.choice(elites)["genome"]
             parent2 = _rng.choice(elites)["genome"]
 
-            child = crossover(
-                parent1,
-                parent2
-            )
+            child = crossover(parent1, parent2)
 
             next_population.append(child)
 
@@ -563,18 +568,19 @@ def run_lotto_genetic_optimizer():
 
     for item in final_population:
         genome = item["Genome"]
+        regulars = genome["regulars"]
 
-        key = tuple(
-            genome["regulars"]
-            + [genome["bonus"]]
-        )
+        if sum(1 for n in regulars if n >= 45) == 0:
+            continue
+
+        key = tuple(regulars + [genome["bonus"]])
 
         if key in unique:
             continue
 
         unique.add(key)
 
-        regulars = genome["regulars"]
+        bucket_counts = count_bucket_numbers(regulars)
 
         rows.append({
             "Rank": len(rows) + 1,
@@ -590,34 +596,25 @@ def run_lotto_genetic_optimizer():
             "LowCount": count_high_low(regulars)[1],
             "OddCount": count_odd_even(regulars)[0],
             "EvenCount": count_odd_even(regulars)[1],
+            "Bucket_LOW": bucket_counts["LOW"],
+            "Bucket_MID_LOW": bucket_counts["MID_LOW"],
+            "Bucket_MID_HIGH": bucket_counts["MID_HIGH"],
+            "Bucket_HIGH": bucket_counts["HIGH"],
+            "Upper50PlusCount": sum(1 for n in regulars if n >= 50),
             "ConsecutivePairs": count_consecutive(regulars),
-            "EntropyScore": round(
-                number_entropy(regulars),
-                4
-            ),
-            "FitnessScore": round(
-                item["FitnessScore"],
-                4
-            ),
-            "ModelVersion": "LottoGeneticOptimizer_v1",
-            "GeneratedAt": datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
+            "EntropyScore": round(number_entropy(regulars), 4),
+            "FitnessScore": round(item["FitnessScore"], 4),
+            "ModelVersion": "LottoGeneticOptimizer_v2_range_balanced",
+            "GeneratedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
 
         if len(rows) >= TARGET_POPULATION:
             break
 
     results_df = pd.DataFrame(rows)
+    generation_df = pd.DataFrame(generation_rows)
 
-    generation_df = pd.DataFrame(
-        generation_rows
-    )
-
-    EXPORT_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
     with pd.ExcelWriter(
         OUTPUT_FILE,
@@ -646,10 +643,6 @@ def run_lotto_genetic_optimizer():
 
     return results_df
 
-
-# =========================================================
-# CLI
-# =========================================================
 
 def main():
     run_lotto_genetic_optimizer()

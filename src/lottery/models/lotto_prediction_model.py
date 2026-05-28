@@ -7,10 +7,6 @@ import numpy as np
 import pandas as pd
 
 
-# =========================================================
-# PROJECT PATHS
-# =========================================================
-
 BASE_DIR = Path(__file__).resolve().parents[3]
 
 FEATURES_FILE = BASE_DIR / "data" / "processed" / "features" / "lotto_features.xlsx"
@@ -19,17 +15,12 @@ EXPORT_DIR = BASE_DIR / "data" / "exports" / "predictions"
 OUTPUT_FILE = EXPORT_DIR / "lotto_predictions.xlsx"
 
 
-# =========================================================
-# MODEL CONFIG
-# =========================================================
-
 REGULAR_RANGE = range(1, 59)
 BONUS_RANGE = range(1, 59)
 
-LOW_REGULAR_MAX = 29
-LOW_BONUS_MAX = 29
+POST_EXPANSION_DATE = pd.Timestamp("2025-09-01")
 
-SIMULATION_COUNT = 5000
+SIMULATION_COUNT = 7000
 TOP_PREDICTIONS = 10
 
 RNG_SEED = 42
@@ -40,16 +31,21 @@ MAX_OVERLAP_WITH_HISTORY = 5
 
 RECENCY_DECAY = 0.985
 
-WEIGHT_FREQUENCY = 2.5
-WEIGHT_RECENCY = 1.5
-WEIGHT_OVERDUE = 1.0
-WEIGHT_PAIR = 0.8
-WEIGHT_PATTERN = 1.0
+WEIGHT_FREQUENCY = 1.4
+WEIGHT_RECENCY = 1.8
+WEIGHT_OVERDUE = 1.8
+WEIGHT_PAIR = 0.55
+WEIGHT_PATTERN = 0.80
+WEIGHT_BUCKET_BALANCE = 1.25
+WEIGHT_UPPER_RANGE = 1.75
 
+RANGE_BUCKETS = {
+    "LOW": range(1, 15),
+    "MID_LOW": range(15, 30),
+    "MID_HIGH": range(30, 45),
+    "HIGH": range(45, 59),
+}
 
-# =========================================================
-# LOAD DATA
-# =========================================================
 
 def load_lotto_features():
     if not FEATURES_FILE.exists():
@@ -83,10 +79,6 @@ def load_lotto_features():
 
     return df
 
-
-# =========================================================
-# HELPERS
-# =========================================================
 
 def normalise_01(series):
     series = pd.Series(series, dtype=float)
@@ -134,7 +126,7 @@ def weighted_choice_no_replace(candidates, weights, k):
 
 
 def count_high_low(numbers):
-    low_count = sum(1 for n in numbers if n <= LOW_REGULAR_MAX)
+    low_count = sum(1 for n in numbers if n <= 29)
     high_count = len(numbers) - low_count
 
     return high_count, low_count
@@ -147,9 +139,61 @@ def count_odd_even(numbers):
     return odd_count, even_count
 
 
+def count_bucket_numbers(numbers):
+    bucket_counts = {}
+
+    for bucket_name, bucket_range in RANGE_BUCKETS.items():
+        bucket_set = set(bucket_range)
+        bucket_counts[bucket_name] = sum(1 for n in numbers if n in bucket_set)
+
+    return bucket_counts
+
+
+def bucket_balance_score(numbers):
+    bucket_counts = count_bucket_numbers(numbers)
+
+    occupied_buckets = sum(1 for count in bucket_counts.values() if count > 0)
+    max_bucket_count = max(bucket_counts.values())
+
+    score = 0
+
+    score += occupied_buckets * 4
+
+    if max_bucket_count <= 3:
+        score += 6
+
+    if bucket_counts["HIGH"] >= 1:
+        score += 10
+
+    if bucket_counts["HIGH"] >= 2:
+        score += 8
+
+    if bucket_counts["LOW"] >= 1 and bucket_counts["HIGH"] >= 1:
+        score += 5
+
+    return score
+
+
+def upper_range_score(numbers):
+    count_50_plus = sum(1 for n in numbers if n >= 50)
+    count_53_plus = sum(1 for n in numbers if n >= 53)
+
+    score = 0
+
+    if count_50_plus >= 1:
+        score += 10
+
+    if count_50_plus >= 2:
+        score += 8
+
+    if count_53_plus >= 1:
+        score += 6
+
+    return score
+
+
 def consecutive_pairs(numbers):
     numbers = sorted(numbers)
-
     count = 0
 
     for i in range(len(numbers) - 1):
@@ -184,19 +228,27 @@ def output_diversity_ok(candidate, selected):
     return True
 
 
-# =========================================================
-# MODEL LEARNING
-# =========================================================
+def era_weight(draw_date):
+    if pd.isna(draw_date):
+        return 0.50
+
+    if draw_date >= POST_EXPANSION_DATE:
+        return 3.0
+
+    return 0.45
+
 
 def build_frequency_scores(df):
     regular_counter = Counter()
     bonus_counter = Counter()
 
     for _, row in df.iterrows():
-        for n in get_regular_numbers(row):
-            regular_counter[n] += 1
+        weight = era_weight(row["DrawDate"])
 
-        bonus_counter[int(row["Bonus"])] += 1
+        for n in get_regular_numbers(row):
+            regular_counter[n] += weight
+
+        bonus_counter[int(row["Bonus"])] += weight
 
     regular_scores = pd.Series(
         {n: regular_counter[n] for n in REGULAR_RANGE}
@@ -223,7 +275,7 @@ def build_recency_scores(df):
     )
 
     for idx, row in df.iterrows():
-        weight = RECENCY_DECAY ** idx
+        weight = (RECENCY_DECAY ** idx) * era_weight(row["DrawDate"])
 
         for n in get_regular_numbers(row):
             regular_scores.loc[n] += weight
@@ -245,7 +297,7 @@ def build_overdue_scores(df):
 
     for n in REGULAR_RANGE:
         if last_seen[n] is None:
-            overdue[n] = len(df)
+            overdue[n] = len(df) * 1.25
         else:
             overdue[n] = last_seen[n]
 
@@ -256,10 +308,11 @@ def build_pair_scores(df):
     pair_counter = Counter()
 
     for _, row in df.iterrows():
+        weight = era_weight(row["DrawDate"])
         numbers = sorted(get_regular_numbers(row))
 
         for pair in combinations(numbers, 2):
-            pair_counter[pair] += 1
+            pair_counter[pair] += weight
 
     return pair_counter
 
@@ -268,30 +321,37 @@ def build_pattern_distributions(df):
     high_low_counter = Counter()
     odd_even_counter = Counter()
     sum_band_counter = Counter()
+    bucket_counter = Counter()
 
     for _, row in df.iterrows():
+        weight = era_weight(row["DrawDate"])
         numbers = get_regular_numbers(row)
 
-        high_low_counter[count_high_low(numbers)] += 1
-        odd_even_counter[count_odd_even(numbers)] += 1
+        high_low_counter[count_high_low(numbers)] += weight
+        odd_even_counter[count_odd_even(numbers)] += weight
 
         regular_sum = sum(numbers)
 
-        if regular_sum <= 120:
+        if regular_sum <= 140:
             sum_band = "Low Sum"
-        elif regular_sum <= 170:
+        elif regular_sum <= 190:
             sum_band = "Mid Sum"
-        elif regular_sum <= 230:
+        elif regular_sum <= 250:
             sum_band = "High Sum"
         else:
             sum_band = "Extreme Sum"
 
-        sum_band_counter[sum_band] += 1
+        sum_band_counter[sum_band] += weight
+
+        bucket_counts = count_bucket_numbers(numbers)
+        bucket_signature = tuple(bucket_counts.values())
+        bucket_counter[bucket_signature] += weight
 
     return {
         "high_low": high_low_counter,
         "odd_even": odd_even_counter,
         "sum_band": sum_band_counter,
+        "bucket": bucket_counter,
     }
 
 
@@ -311,15 +371,22 @@ def build_number_weights(df):
         + WEIGHT_RECENCY * rec_bonus
     )
 
+    for n in REGULAR_RANGE:
+        if n >= 50:
+            regular_weights.loc[n] *= 1.35
+
+        if n >= 53:
+            regular_weights.loc[n] *= 1.20
+
+    for n in BONUS_RANGE:
+        if n >= 50:
+            bonus_weights.loc[n] *= 1.25
+
     regular_weights = regular_weights.clip(lower=0.001)
     bonus_weights = bonus_weights.clip(lower=0.001)
 
     return regular_weights.to_dict(), bonus_weights.to_dict()
 
-
-# =========================================================
-# CANDIDATE SCORING
-# =========================================================
 
 def score_pair_strength(numbers, pair_counter):
     score = 0
@@ -335,20 +402,24 @@ def score_pattern_fit(numbers, pattern_distributions):
     odd_even = count_odd_even(numbers)
     regular_sum = sum(numbers)
 
-    if regular_sum <= 120:
+    if regular_sum <= 140:
         sum_band = "Low Sum"
-    elif regular_sum <= 170:
+    elif regular_sum <= 190:
         sum_band = "Mid Sum"
-    elif regular_sum <= 230:
+    elif regular_sum <= 250:
         sum_band = "High Sum"
     else:
         sum_band = "Extreme Sum"
 
+    bucket_counts = count_bucket_numbers(numbers)
+    bucket_signature = tuple(bucket_counts.values())
+
     high_low_score = pattern_distributions["high_low"][high_low]
     odd_even_score = pattern_distributions["odd_even"][odd_even]
     sum_band_score = pattern_distributions["sum_band"][sum_band]
+    bucket_score = pattern_distributions["bucket"][bucket_signature]
 
-    return high_low_score + odd_even_score + sum_band_score
+    return high_low_score + odd_even_score + sum_band_score + bucket_score
 
 
 def calculate_confidence(raw_score, max_score):
@@ -359,10 +430,6 @@ def calculate_confidence(raw_score, max_score):
 
     return round(min(confidence, 95), 2)
 
-
-# =========================================================
-# CANDIDATE GENERATION
-# =========================================================
 
 def generate_candidate(regular_weights, bonus_weights):
     regular_numbers = weighted_choice_no_replace(
@@ -405,7 +472,7 @@ def generate_predictions(
     candidates = []
 
     attempts = 0
-    max_attempts = simulation_count * 25
+    max_attempts = simulation_count * 30
 
     while len(candidates) < simulation_count and attempts < max_attempts:
         attempts += 1
@@ -426,7 +493,12 @@ def generate_predictions(
 
         regular_sum = sum(numbers)
 
-        if regular_sum < 80 or regular_sum > 260:
+        if regular_sum < 95 or regular_sum > 285:
+            continue
+
+        bucket_counts = count_bucket_numbers(numbers)
+
+        if bucket_counts["HIGH"] == 0:
             continue
 
         base_score = (
@@ -436,11 +508,15 @@ def generate_predictions(
 
         pair_score = score_pair_strength(numbers, pair_counter)
         pattern_score = score_pattern_fit(numbers, pattern_distributions)
+        bucket_score = bucket_balance_score(numbers)
+        upper_score = upper_range_score(numbers)
 
         raw_score = (
             base_score
             + (WEIGHT_PAIR * pair_score)
             + (WEIGHT_PATTERN * pattern_score)
+            + (WEIGHT_BUCKET_BALANCE * bucket_score)
+            + (WEIGHT_UPPER_RANGE * upper_score)
         )
 
         candidates.append({
@@ -456,6 +532,11 @@ def generate_predictions(
             "LowCount": low_count,
             "OddCount": odd_count,
             "EvenCount": even_count,
+            "Bucket_LOW": bucket_counts["LOW"],
+            "Bucket_MID_LOW": bucket_counts["MID_LOW"],
+            "Bucket_MID_HIGH": bucket_counts["MID_HIGH"],
+            "Bucket_HIGH": bucket_counts["HIGH"],
+            "Upper50PlusCount": sum(1 for n in numbers if n >= 50),
             "ConsecutivePairs": consecutive_pairs(numbers),
             "RawScore": raw_score,
         })
@@ -526,21 +607,20 @@ def generate_predictions(
             "LowCount": int(match["LowCount"]),
             "OddCount": int(match["OddCount"]),
             "EvenCount": int(match["EvenCount"]),
+            "Bucket_LOW": int(match["Bucket_LOW"]),
+            "Bucket_MID_LOW": int(match["Bucket_MID_LOW"]),
+            "Bucket_MID_HIGH": int(match["Bucket_MID_HIGH"]),
+            "Bucket_HIGH": int(match["Bucket_HIGH"]),
+            "Upper50PlusCount": int(match["Upper50PlusCount"]),
             "ConsecutivePairs": int(match["ConsecutivePairs"]),
             "RawScore": round(float(match["RawScore"]), 4),
             "Confidence": float(match["Confidence"]),
-            "ModelVersion": "Lotto_v1_statistical",
+            "ModelVersion": "Lotto_v2_range_balanced",
             "GeneratedAt": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
 
-    final_df = pd.DataFrame(final_rows)
+    return pd.DataFrame(final_rows)
 
-    return final_df
-
-
-# =========================================================
-# EXPORT
-# =========================================================
 
 def export_lotto_predictions(
     simulation_count=SIMULATION_COUNT,
@@ -573,10 +653,6 @@ def export_lotto_predictions(
 
     return predictions
 
-
-# =========================================================
-# CLI
-# =========================================================
 
 def main():
     export_lotto_predictions()
