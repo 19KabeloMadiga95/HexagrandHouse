@@ -1,4 +1,8 @@
-# Python
+```gitignore
+# =========================================================
+# PYTHON
+# =========================================================
+
 .venv/
 venv/
 __pycache__/
@@ -7,38 +11,104 @@ __pycache__/
 *.pyd
 .ipynb_checkpoints/
 
-# Environment
+# =========================================================
+# ENVIRONMENT
+# =========================================================
+
 .env
 *.env
 
-# Logs
+# =========================================================
+# LOGS
+# =========================================================
+
 *.log
 
-# Streamlit
+# =========================================================
+# STREAMLIT
+# =========================================================
+
 .streamlit/secrets.toml
 
-# VS Code / IDE
+# =========================================================
+# IDE / EDITOR
+# =========================================================
+
 .vscode/
 .idea/
 
-# OS
+# =========================================================
+# OS FILES
+# =========================================================
+
 .DS_Store
 Thumbs.db
 
-# Temporary
+# =========================================================
+# TEMP FILES
+# =========================================================
+
 *.tmp
 *.bak
 ~$*
 
-# Python build
+# =========================================================
+# PYTHON BUILD
+# =========================================================
+
 build/
 dist/
 *.egg-info/
 
-# Cache
+# =========================================================
+# CACHE
+# =========================================================
+
 .pytest_cache/
 .mypy_cache/
 
-# Large/raw optional data
+# =========================================================
+# RAW SOURCE DATA
+# =========================================================
+
 data/football/raw/
 data/lottery/raw/
+
+# =========================================================
+# GENERATED OUTPUTS
+# =========================================================
+
+data/exports/
+data/processed/
+
+data/football/exports/
+data/football/processed/
+data/football/logs/
+
+data/logs/
+
+# =========================================================
+# LARGE SNAPSHOTS / BACKTESTS
+# =========================================================
+
+data/football/exports/backtesting/prediction_snapshots/
+
+# =========================================================
+# KEEP THESE TRACKED
+# =========================================================
+
+!data/master/
+!data/master/*.xlsx
+
+!data/football/master/
+!data/football/master/*.xlsx
+
+!data/exports/final_predictions/
+!data/exports/final_predictions/*.xlsx
+
+!data/football/exports/predictions/
+!data/football/exports/predictions/*.xlsx
+
+!data/football/exports/backtesting/
+!data/football/exports/backtesting/*.xlsx
+```
