@@ -88,9 +88,9 @@ from src.lottery.optimization.uk49s_genetic_optimizer import (
     run_uk49s_genetic_optimizer,
 )
 
-##from src.lottery.optimization.adaptive_weight_tuner import (
-##    run_adaptive_weight_tuner,
-##)
+from src.lottery.optimization.adaptive_weight_tuner import (
+    run_adaptive_weight_tuner,
+)
 
 
 # =========================================================
@@ -461,11 +461,11 @@ def run_daily_lottery_cycle():
         logs=logs,
     )
 
-##    run_step(
-##        step_name="Run Adaptive Weight Tuner",
-##        function=run_adaptive_weight_tuner,
-##        logs=logs,
-##    )
+    run_step(
+        step_name="Run Adaptive Weight Tuner",
+        function=run_adaptive_weight_tuner,
+        logs=logs,
+    )
 
     # -----------------------------------------------------
     # SCORING + FINAL ENSEMBLE LAYER
