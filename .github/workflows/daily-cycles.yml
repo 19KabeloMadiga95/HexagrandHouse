@@ -36,6 +36,10 @@ jobs:
         run: |
           python -m src.football.automation.run_daily_football_cycle
 
+      - name: Build HexagrandHouse Database
+        run: |
+          python -m src.database.build_hexagrandhouse_db
+
       - name: Create cloud refresh marker
         run: |
           mkdir -p data
@@ -62,7 +66,10 @@ jobs:
             echo "No deployment output changes to commit."
           fi
 
-      - name: Push changes
+      - name: Pull latest changes
         run: |
           git pull --rebase origin main
+
+      - name: Push changes
+        run: |
           git push
