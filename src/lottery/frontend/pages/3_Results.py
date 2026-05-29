@@ -17,14 +17,15 @@ from lottery.frontend.components.kpi_cards import (
     last_refresh_card,
 )
 
-from lottery.frontend.components.charts import (
-    plot_bar_chart,
+from lottery.frontend.components.charts import plot_bar_chart
+
+from database.database_connection import (
+    database_exists,
+    read_lottery_history,
+    read_football_history,
+    read_football_backtest_history,
 )
 
-
-# =========================================================
-# PAGE CONFIG
-# =========================================================
 
 st.set_page_config(
     page_title="Results Intelligence",
@@ -33,16 +34,8 @@ st.set_page_config(
 )
 
 
-# =========================================================
-# CSS
-# =========================================================
-
 def load_main_css():
-    css_path = (
-        Path(__file__).resolve().parents[1]
-        / "styles"
-        / "main.css"
-    )
+    css_path = Path(__file__).resolve().parents[1] / "styles" / "main.css"
 
     with open(css_path, "r", encoding="utf-8") as f:
         st.markdown(
@@ -55,187 +48,28 @@ def inject_results_css():
     st.markdown(
         """
 <style>
-
-.hgh-results-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 18px;
-}
-
-.hgh-result-card {
-    background:
-        radial-gradient(circle at top left, rgba(255,191,0,0.10), transparent 36%),
-        linear-gradient(145deg, rgba(13,19,28,0.98), rgba(6,10,16,0.98));
-    border: 1px solid rgba(255,191,0,0.28);
-    border-radius: 20px;
-    padding: 20px;
-    margin-bottom: 18px;
-    box-shadow: 0 18px 45px rgba(0,0,0,0.28);
-}
-
-.hgh-result-topline {
-    display: flex;
-    justify-content: space-between;
-    gap: 14px;
-    align-items: flex-start;
-    margin-bottom: 16px;
-}
-
-.hgh-result-kicker {
-    color: #ffbf00;
-    font-size: 0.72rem;
-    font-weight: 900;
-    letter-spacing: 0.10em;
-    text-transform: uppercase;
-}
-
-.hgh-result-date {
-    color: #9db0ca;
-    font-size: 0.76rem;
-    margin-top: 4px;
-}
-
-.hgh-result-badge {
-    border: 1px solid rgba(255,191,0,0.36);
-    color: #ffbf00;
-    border-radius: 999px;
-    padding: 5px 10px;
-    font-size: 0.68rem;
-    font-weight: 900;
-    white-space: nowrap;
-}
-
-.hgh-lottery-balls {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin: 18px 0;
-}
-
-.hgh-lottery-ball {
-    width: 42px;
-    height: 42px;
-    border-radius: 50%;
-    display: inline-flex;
-    justify-content: center;
-    align-items: center;
-    color: #111827;
-    font-weight: 950;
-    background:
-        radial-gradient(circle at 30% 25%, #ffffff, #d8dee8 45%, #8b96a8);
-    box-shadow:
-        inset 0 2px 4px rgba(255,255,255,0.7),
-        0 8px 18px rgba(0,0,0,0.35);
-}
-
-.hgh-lottery-ball-bonus {
-    background:
-        radial-gradient(circle at 30% 25%, #ffd966, #ffbf00 48%, #a66a00);
-    color: black;
-}
-
-.hgh-result-meta-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    margin-top: 14px;
-}
-
-.hgh-result-meta {
-    background: rgba(15,23,42,0.72);
-    border: 1px solid rgba(148,163,184,0.14);
-    border-radius: 14px;
-    padding: 11px;
-}
-
-.hgh-result-meta-label {
-    color: #9db0ca;
-    font-size: 0.66rem;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: 5px;
-}
-
-.hgh-result-meta-value {
-    color: white;
-    font-weight: 900;
-    font-size: 0.9rem;
-}
-
-.hgh-football-scoreline {
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
-    gap: 18px;
-    align-items: center;
-    margin: 18px 0;
-}
-
-.hgh-football-team {
-    color: white;
-    font-size: 1.15rem;
-    font-weight: 950;
-    line-height: 1.2;
-}
-
-.hgh-football-team-away {
-    text-align: right;
-}
-
-.hgh-football-score {
-    color: #ffbf00;
-    font-size: 1.7rem;
-    font-weight: 950;
-    padding: 8px 15px;
-    border-radius: 14px;
-    background: rgba(255,191,0,0.10);
-    border: 1px solid rgba(255,191,0,0.25);
-}
-
-.hgh-hit-good {
-    color: #00e676;
-    font-weight: 900;
-}
-
-.hgh-hit-bad {
-    color: #ff5c5c;
-    font-weight: 900;
-}
-
-.hgh-pill-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin: 12px 0 22px 0;
-}
-
-.hgh-pill {
-    border: 1px solid rgba(255,191,0,0.22);
-    background: rgba(255,191,0,0.06);
-    color: #ffbf00;
-    border-radius: 999px;
-    padding: 7px 12px;
-    font-size: 0.76rem;
-    font-weight: 900;
-}
-
-@media (max-width: 900px) {
-    .hgh-results-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .hgh-result-meta-grid {
-        grid-template-columns: 1fr;
-    }
-
-    .hgh-football-scoreline {
-        grid-template-columns: 1fr;
-    }
-
-    .hgh-football-team-away {
-        text-align: left;
-    }
-}
-
+.hgh-results-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;}
+.hgh-result-card{background:radial-gradient(circle at top left,rgba(255,191,0,0.10),transparent 36%),linear-gradient(145deg,rgba(13,19,28,0.98),rgba(6,10,16,0.98));border:1px solid rgba(255,191,0,0.28);border-radius:20px;padding:20px;margin-bottom:18px;box-shadow:0 18px 45px rgba(0,0,0,0.28);}
+.hgh-result-topline{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:16px;}
+.hgh-result-kicker{color:#ffbf00;font-size:0.72rem;font-weight:900;letter-spacing:0.10em;text-transform:uppercase;}
+.hgh-result-date{color:#9db0ca;font-size:0.76rem;margin-top:4px;}
+.hgh-result-badge{border:1px solid rgba(255,191,0,0.36);color:#ffbf00;border-radius:999px;padding:5px 10px;font-size:0.68rem;font-weight:900;white-space:nowrap;}
+.hgh-lottery-balls{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0;}
+.hgh-lottery-ball{width:42px;height:42px;border-radius:50%;display:inline-flex;justify-content:center;align-items:center;color:#111827;font-weight:950;background:radial-gradient(circle at 30% 25%,#ffffff,#d8dee8 45%,#8b96a8);box-shadow:inset 0 2px 4px rgba(255,255,255,0.7),0 8px 18px rgba(0,0,0,0.35);}
+.hgh-lottery-ball-bonus{background:radial-gradient(circle at 30% 25%,#ffd966,#ffbf00 48%,#a66a00);color:black;}
+.hgh-result-meta-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px;}
+.hgh-result-meta{background:rgba(15,23,42,0.72);border:1px solid rgba(148,163,184,0.14);border-radius:14px;padding:11px;}
+.hgh-result-meta-label{color:#9db0ca;font-size:0.66rem;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:5px;}
+.hgh-result-meta-value{color:white;font-weight:900;font-size:0.9rem;}
+.hgh-football-scoreline{display:grid;grid-template-columns:1fr auto 1fr;gap:18px;align-items:center;margin:18px 0;}
+.hgh-football-team{color:white;font-size:1.15rem;font-weight:950;line-height:1.2;}
+.hgh-football-team-away{text-align:right;}
+.hgh-football-score{color:#ffbf00;font-size:1.7rem;font-weight:950;padding:8px 15px;border-radius:14px;background:rgba(255,191,0,0.10);border:1px solid rgba(255,191,0,0.25);}
+.hgh-hit-good{color:#00e676;font-weight:900;}
+.hgh-hit-bad{color:#ff5c5c;font-weight:900;}
+.hgh-pill-row{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 22px 0;}
+.hgh-pill{border:1px solid rgba(255,191,0,0.22);background:rgba(255,191,0,0.06);color:#ffbf00;border-radius:999px;padding:7px 12px;font-size:0.76rem;font-weight:900;}
+@media(max-width:900px){.hgh-results-grid{grid-template-columns:1fr;}.hgh-result-meta-grid{grid-template-columns:1fr;}.hgh-football-scoreline{grid-template-columns:1fr;}.hgh-football-team-away{text-align:left;}}
 </style>
         """,
         unsafe_allow_html=True
@@ -247,25 +81,14 @@ inject_results_css()
 last_refresh_card()
 
 
-# =========================================================
-# PATHS
-# =========================================================
-
 BASE_DIR = Path(__file__).resolve().parents[4]
 
 LOTTERY_MASTER_FILE = (
-    BASE_DIR
-    / "data"
-    / "master"
-    / "lottery_historical_master.xlsx"
+    BASE_DIR / "data" / "master" / "lottery_historical_master.xlsx"
 )
 
 FOOTBALL_MASTER_FILE = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "master"
-    / "football_master_all_leagues.xlsx"
+    BASE_DIR / "data" / "football" / "master" / "football_master_all_leagues.xlsx"
 )
 
 FOOTBALL_BACKTEST_FILE = (
@@ -277,10 +100,6 @@ FOOTBALL_BACKTEST_FILE = (
     / "football_fixture_backtest_history.xlsx"
 )
 
-
-# =========================================================
-# DATA LOADING
-# =========================================================
 
 @st.cache_data(ttl=300)
 def safe_read_excel(path, sheet_name=0):
@@ -294,26 +113,72 @@ def safe_read_excel(path, sheet_name=0):
         return pd.DataFrame()
 
 
-def safe_text(value, default="-"):
-    if value is None:
-        return default
+@st.cache_data(ttl=300)
+def load_lottery_results():
+    if database_exists():
+        df = read_lottery_history()
 
-    if pd.isna(value):
+        if not df.empty:
+            return df
+
+    return safe_read_excel(
+        LOTTERY_MASTER_FILE,
+        "Historical_Results"
+    )
+
+
+@st.cache_data(ttl=300)
+def load_football_results():
+    if database_exists():
+        df = read_football_history()
+
+        if not df.empty:
+            return df
+
+    df = safe_read_excel(
+        FOOTBALL_MASTER_FILE,
+        "Football_Master"
+    )
+
+    if df.empty:
+        df = safe_read_excel(FOOTBALL_MASTER_FILE)
+
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_football_backtests():
+    if database_exists():
+        df = read_football_backtest_history()
+
+        if not df.empty:
+            return df
+
+    df = safe_read_excel(
+        FOOTBALL_BACKTEST_FILE,
+        "Backtest_History"
+    )
+
+    if df.empty:
+        df = safe_read_excel(FOOTBALL_BACKTEST_FILE)
+
+    return df
+
+
+def safe_text(value, default="-"):
+    if value is None or pd.isna(value):
         return default
 
     value = str(value).strip()
 
-    if value == "" or value.lower() == "nan":
+    if value == "" or value.lower() in ["nan", "none", "nat"]:
         return default
 
     return html.escape(value)
 
 
 def safe_number(value, default="-"):
-    if value is None:
-        return default
-
-    if pd.isna(value):
+    if value is None or pd.isna(value):
         return default
 
     try:
@@ -324,10 +189,7 @@ def safe_number(value, default="-"):
 
 def format_date(value):
     try:
-        value = pd.to_datetime(
-            value,
-            errors="coerce"
-        )
+        value = pd.to_datetime(value, errors="coerce")
 
         if pd.isna(value):
             return "-"
@@ -340,10 +202,7 @@ def format_date(value):
 
 def format_short_date(value):
     try:
-        value = pd.to_datetime(
-            value,
-            errors="coerce"
-        )
+        value = pd.to_datetime(value, errors="coerce")
 
         if pd.isna(value):
             return "-"
@@ -373,46 +232,79 @@ def format_currency(value):
         return safe_text(value)
 
 
-# =========================================================
-# LOAD DATA
-# =========================================================
+def prepare_lottery_df(df):
+    if df.empty:
+        return df
 
-lottery_df = safe_read_excel(
-    LOTTERY_MASTER_FILE
-)
+    temp = df.copy()
 
-football_df = safe_read_excel(
-    FOOTBALL_MASTER_FILE,
-    "Football_Master"
-)
+    if "DrawDate" in temp.columns:
+        temp["DrawDate"] = pd.to_datetime(
+            temp["DrawDate"],
+            errors="coerce"
+        )
 
-football_backtest_df = safe_read_excel(
-    FOOTBALL_BACKTEST_FILE,
-    "Backtest_History"
-)
-
-if not lottery_df.empty and "DrawDate" in lottery_df.columns:
-    lottery_df["DrawDate"] = pd.to_datetime(
-        lottery_df["DrawDate"],
-        errors="coerce"
-    )
-
-if not football_df.empty and "MatchDate" in football_df.columns:
-    football_df["MatchDate"] = pd.to_datetime(
-        football_df["MatchDate"],
-        errors="coerce"
-    )
-
-if not football_backtest_df.empty and "FixtureDate" in football_backtest_df.columns:
-    football_backtest_df["FixtureDate"] = pd.to_datetime(
-        football_backtest_df["FixtureDate"],
-        errors="coerce"
-    )
+    return temp
 
 
-# =========================================================
-# FILTER RECENT DATA
-# =========================================================
+def prepare_football_df(df):
+    if df.empty:
+        return df
+
+    temp = df.copy()
+
+    if "MatchDate" in temp.columns:
+        temp["MatchDate"] = pd.to_datetime(
+            temp["MatchDate"],
+            errors="coerce"
+        )
+
+    for col in [
+        "HomeGoals",
+        "AwayGoals",
+        "TotalGoals",
+        "TotalCorners",
+        "BTTS",
+    ]:
+        if col in temp.columns:
+            temp[col] = pd.to_numeric(
+                temp[col],
+                errors="coerce"
+            )
+
+    return temp
+
+
+def prepare_backtest_df(df):
+    if df.empty:
+        return df
+
+    temp = df.copy()
+
+    if "FixtureDate" in temp.columns:
+        temp["FixtureDate"] = pd.to_datetime(
+            temp["FixtureDate"],
+            errors="coerce"
+        )
+
+    for col in [
+        "ResultHit",
+        "GoalsHit",
+        "CornersHit",
+    ]:
+        if col in temp.columns:
+            temp[col] = pd.to_numeric(
+                temp[col],
+                errors="coerce"
+            )
+
+    return temp
+
+
+lottery_df = prepare_lottery_df(load_lottery_results())
+football_df = prepare_football_df(load_football_results())
+football_backtest_df = prepare_backtest_df(load_football_backtests())
+
 
 today = pd.Timestamp.today().normalize()
 seven_days_ago = today - pd.Timedelta(days=7)
@@ -431,15 +323,12 @@ if not recent_football_df.empty and "MatchDate" in recent_football_df.columns:
         recent_football_df["MatchDate"] >= seven_days_ago
     ].copy()
 
-    recent_football_df = recent_football_df[
-        recent_football_df["HomeGoals"].notna()
-        & recent_football_df["AwayGoals"].notna()
-    ].copy()
+    if "HomeGoals" in recent_football_df.columns and "AwayGoals" in recent_football_df.columns:
+        recent_football_df = recent_football_df[
+            recent_football_df["HomeGoals"].notna()
+            & recent_football_df["AwayGoals"].notna()
+        ].copy()
 
-
-# =========================================================
-# HERO
-# =========================================================
 
 st.markdown(
     """<div class="hgh-premium-hero-small"><div class="hgh-hero-kicker">RESULTS INTELLIGENCE</div><h1 class="hgh-hero-title-small">Recent Outcomes & Performance Feed</h1><p class="hgh-hero-subtitle-small">A cleaner view of recent lottery draws, completed football matches and model scoring activity from the last 7 days.</p></div>""",
@@ -448,10 +337,6 @@ st.markdown(
 
 st.divider()
 
-
-# =========================================================
-# KPI SUMMARY
-# =========================================================
 
 latest_lottery_date = "-"
 
@@ -475,7 +360,10 @@ if (
     not football_backtest_df.empty
     and "ResultHit" in football_backtest_df.columns
 ):
-    result_accuracy = f"{round(pd.to_numeric(football_backtest_df['ResultHit'], errors='coerce').mean() * 100, 1)}%"
+    result_accuracy = (
+        f"{round(pd.to_numeric(football_backtest_df['ResultHit'], errors='coerce').mean() * 100, 1)}%"
+    )
+
 
 k1, k2, k3, k4 = st.columns(4)
 
@@ -515,10 +403,6 @@ with k4:
 st.divider()
 
 
-# =========================================================
-# CONTROLS
-# =========================================================
-
 control_col1, control_col2, control_col3 = st.columns(3)
 
 with control_col1:
@@ -547,10 +431,7 @@ with control_col2:
             )
         )
     else:
-        st.selectbox(
-            "Lottery Game",
-            ["All"]
-        )
+        st.selectbox("Lottery Game", ["All"])
 
 with control_col3:
     football_league_filter = "All"
@@ -567,10 +448,7 @@ with control_col3:
             )
         )
     else:
-        st.selectbox(
-            "Football League",
-            ["All"]
-        )
+        st.selectbox("Football League", ["All"])
 
 
 filtered_lottery_df = recent_lottery_df.copy()
@@ -605,67 +483,34 @@ st.markdown(
 st.divider()
 
 
-# =========================================================
-# CARD RENDERERS
-# =========================================================
-
 def render_lottery_result_card(row):
-    game_name = safe_text(
-        row.get("GameName", row.get("GameFamily", "Lottery"))
-    )
-
-    draw_type = safe_text(
-        row.get("DrawType", "")
-    )
-
-    draw_date = format_date(
-        row.get("DrawDate")
-    )
-
-    jackpot = format_currency(
-        row.get("Jackpot")
-    )
-
-    outcome = safe_text(
-        row.get("Outcome", "-")
-    )
+    game_name = safe_text(row.get("GameName", row.get("GameFamily", "Lottery")))
+    draw_type = safe_text(row.get("DrawType", ""))
+    draw_date = format_date(row.get("DrawDate"))
+    jackpot = format_currency(row.get("Jackpot"))
+    outcome = safe_text(row.get("Outcome", "-"))
 
     numbers = []
 
-    for col in [
-        "N1",
-        "N2",
-        "N3",
-        "N4",
-        "N5",
-        "N6",
-    ]:
+    for col in ["N1", "N2", "N3", "N4", "N5", "N6"]:
         if col in row.index:
-            number = safe_number(
-                row.get(col)
-            )
+            number = safe_number(row.get(col))
 
             if number != "-":
                 numbers.append(number)
 
-    bonus = safe_number(
-        row.get("Bonus")
-    )
+    bonus = safe_number(row.get("Bonus"))
 
     ball_html = ""
 
     for number in numbers:
         ball_html += (
-            f'<span class="hgh-lottery-ball">'
-            f'{str(number).zfill(2)}'
-            f'</span>'
+            f'<span class="hgh-lottery-ball">{str(number).zfill(2)}</span>'
         )
 
     if bonus != "-":
         ball_html += (
-            f'<span class="hgh-lottery-ball hgh-lottery-ball-bonus">'
-            f'{str(bonus).zfill(2)}'
-            f'</span>'
+            f'<span class="hgh-lottery-ball hgh-lottery-ball-bonus">{str(bonus).zfill(2)}</span>'
         )
 
     html_card = f"""
@@ -677,75 +522,29 @@ def render_lottery_result_card(row):
 </div>
 <div class="hgh-result-badge">{draw_type}</div>
 </div>
-
-<div class="hgh-lottery-balls">
-{ball_html}
-</div>
-
+<div class="hgh-lottery-balls">{ball_html}</div>
 <div class="hgh-result-meta-grid">
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">Jackpot</div>
-<div class="hgh-result-meta-value">{jackpot}</div>
-</div>
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">Outcome</div>
-<div class="hgh-result-meta-value">{outcome}</div>
-</div>
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">Source</div>
-<div class="hgh-result-meta-value">Official</div>
-</div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">Jackpot</div><div class="hgh-result-meta-value">{jackpot}</div></div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">Outcome</div><div class="hgh-result-meta-value">{outcome}</div></div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">Source</div><div class="hgh-result-meta-value">Official</div></div>
 </div>
 </div>
 """
 
-    st.markdown(
-        html_card,
-        unsafe_allow_html=True
-    )
+    st.markdown(html_card, unsafe_allow_html=True)
 
 
 def render_football_result_card(row):
-    league = safe_text(
-        row.get("League", "Football")
-    )
-
-    country = safe_text(
-        row.get("Country", "-")
-    )
-
-    match_date = format_date(
-        row.get("MatchDate")
-    )
-
-    home_team = safe_text(
-        row.get("HomeTeam")
-    )
-
-    away_team = safe_text(
-        row.get("AwayTeam")
-    )
-
-    home_goals = safe_number(
-        row.get("HomeGoals")
-    )
-
-    away_goals = safe_number(
-        row.get("AwayGoals")
-    )
-
-    result_label = safe_text(
-        row.get("ResultLabel", "-")
-    )
-
-    total_goals = safe_number(
-        row.get("TotalGoals")
-    )
-
-    total_corners = safe_number(
-        row.get("TotalCorners")
-    )
-
+    league = safe_text(row.get("League", "Football"))
+    country = safe_text(row.get("Country", "-"))
+    match_date = format_date(row.get("MatchDate"))
+    home_team = safe_text(row.get("HomeTeam"))
+    away_team = safe_text(row.get("AwayTeam"))
+    home_goals = safe_number(row.get("HomeGoals"))
+    away_goals = safe_number(row.get("AwayGoals"))
+    result_label = safe_text(row.get("ResultLabel", "-"))
+    total_goals = safe_number(row.get("TotalGoals"))
+    total_corners = safe_number(row.get("TotalCorners"))
     btts = "Yes" if safe_number(row.get("BTTS"), 0) == 1 else "No"
 
     html_card = f"""
@@ -757,75 +556,33 @@ def render_football_result_card(row):
 </div>
 <div class="hgh-result-badge">{result_label}</div>
 </div>
-
 <div class="hgh-football-scoreline">
 <div class="hgh-football-team">{home_team}</div>
 <div class="hgh-football-score">{home_goals} - {away_goals}</div>
 <div class="hgh-football-team hgh-football-team-away">{away_team}</div>
 </div>
-
 <div class="hgh-result-meta-grid">
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">Total Goals</div>
-<div class="hgh-result-meta-value">{total_goals}</div>
-</div>
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">Corners</div>
-<div class="hgh-result-meta-value">{total_corners}</div>
-</div>
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">BTTS</div>
-<div class="hgh-result-meta-value">{btts}</div>
-</div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">Total Goals</div><div class="hgh-result-meta-value">{total_goals}</div></div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">Corners</div><div class="hgh-result-meta-value">{total_corners}</div></div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">BTTS</div><div class="hgh-result-meta-value">{btts}</div></div>
 </div>
 </div>
 """
 
-    st.markdown(
-        html_card,
-        unsafe_allow_html=True
-    )
+    st.markdown(html_card, unsafe_allow_html=True)
 
 
 def render_scored_prediction_card(row):
-    league = safe_text(
-        row.get("League", "Football")
-    )
+    league = safe_text(row.get("League", "Football"))
+    fixture_date = format_date(row.get("FixtureDate"))
+    home_team = safe_text(row.get("HomeTeam"))
+    away_team = safe_text(row.get("AwayTeam"))
+    predicted_result = safe_text(row.get("PredictedResult"))
+    actual_result = safe_text(row.get("ActualResult"))
 
-    fixture_date = format_date(
-        row.get("FixtureDate")
-    )
-
-    home_team = safe_text(
-        row.get("HomeTeam")
-    )
-
-    away_team = safe_text(
-        row.get("AwayTeam")
-    )
-
-    predicted_result = safe_text(
-        row.get("PredictedResult")
-    )
-
-    actual_result = safe_text(
-        row.get("ActualResult")
-    )
-
-    result_hit = safe_number(
-        row.get("ResultHit"),
-        0
-    )
-
-    goals_hit = safe_number(
-        row.get("GoalsHit"),
-        0
-    )
-
-    corners_hit = safe_number(
-        row.get("CornersHit"),
-        0
-    )
+    result_hit = safe_number(row.get("ResultHit"), 0)
+    goals_hit = safe_number(row.get("GoalsHit"), 0)
+    corners_hit = safe_number(row.get("CornersHit"), 0)
 
     result_status = (
         '<span class="hgh-hit-good">✔ Hit</span>'
@@ -854,45 +611,25 @@ def render_scored_prediction_card(row):
 </div>
 <div class="hgh-result-badge">Model Scored</div>
 </div>
-
 <div class="hgh-football-scoreline">
 <div class="hgh-football-team">{home_team}</div>
 <div class="hgh-football-score">VS</div>
 <div class="hgh-football-team hgh-football-team-away">{away_team}</div>
 </div>
-
 <div class="hgh-result-meta-grid">
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">Prediction</div>
-<div class="hgh-result-meta-value">{predicted_result}</div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">Prediction</div><div class="hgh-result-meta-value">{predicted_result}</div></div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">Actual</div><div class="hgh-result-meta-value">{actual_result}</div></div>
+<div class="hgh-result-meta"><div class="hgh-result-meta-label">Outcome</div><div class="hgh-result-meta-value">{result_status}</div></div>
 </div>
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">Actual</div>
-<div class="hgh-result-meta-value">{actual_result}</div>
-</div>
-<div class="hgh-result-meta">
-<div class="hgh-result-meta-label">Outcome</div>
-<div class="hgh-result-meta-value">{result_status}</div>
-</div>
-</div>
-
 <div class="hgh-pill-row">
 <span class="hgh-pill">{goals_status}</span>
 <span class="hgh-pill">{corners_status}</span>
 </div>
-
 </div>
 """
 
-    st.markdown(
-        html_card,
-        unsafe_allow_html=True
-    )
+    st.markdown(html_card, unsafe_allow_html=True)
 
-
-# =========================================================
-# MAIN TABS
-# =========================================================
 
 overview_tab, lottery_tab, football_tab, scored_tab, charts_tab = st.tabs(
     [

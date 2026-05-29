@@ -24,6 +24,13 @@ from lottery.frontend.components.charts import (
     plot_bar_chart,
 )
 
+from database.database_connection import (
+    database_exists,
+    read_football_predictions,
+    read_football_ensemble_predictions,
+    read_football_fixtures,
+)
+
 
 st.set_page_config(
     page_title="Football Intelligence",
@@ -92,6 +99,73 @@ def safe_read_excel(path, sheet_name=0):
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=300)
+def load_fixture_predictions():
+    if database_exists():
+        df = read_football_predictions()
+
+        if not df.empty:
+            return df
+
+    df = safe_read_excel(
+        FIXTURE_FILE,
+        "Fixture_Predictions"
+    )
+
+    if df.empty:
+        df = safe_read_excel(FIXTURE_FILE)
+
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_ensemble_predictions():
+    if database_exists():
+        df = read_football_ensemble_predictions()
+
+        if not df.empty:
+            return df
+
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def load_fixtures():
+    if database_exists():
+        df = read_football_fixtures()
+
+        if not df.empty:
+            return df
+
+    return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def load_top_plays():
+    df = safe_read_excel(
+        TOP_PLAYS_FILE,
+        "Top_Plays"
+    )
+
+    if df.empty:
+        df = safe_read_excel(TOP_PLAYS_FILE)
+
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_value_bets():
+    df = safe_read_excel(
+        VALUE_BETS_FILE,
+        "Value_Bets"
+    )
+
+    if df.empty:
+        df = safe_read_excel(VALUE_BETS_FILE)
+
+    return df
+
+
 def prepare_fixture_df(df):
     if df.empty:
         return df
@@ -102,6 +176,9 @@ def prepare_fixture_df(df):
         "EnsembleConfidenceScore",
         "SignalCount",
         "ElitePrediction",
+        "ValueScore",
+        "ModelProbability",
+        "PredictedResultProbability",
     ]
 
     for col in numeric_cols:
@@ -114,33 +191,97 @@ def prepare_fixture_df(df):
     return temp
 
 
-fixture_df = safe_read_excel(
-    FIXTURE_FILE,
-    "Fixture_Predictions"
-)
+def normalise_confidence_scores(df):
+    if df.empty:
+        return df
 
-if fixture_df.empty:
-    fixture_df = safe_read_excel(
-        FIXTURE_FILE
+    temp = df.copy()
+
+    possible_cols = [
+        "EnsembleConfidenceScore",
+        "ConfidenceScore",
+        "EnsembleScore",
+        "RawScore",
+    ]
+
+    confidence_col = None
+
+    for col in possible_cols:
+        if col in temp.columns:
+            confidence_col = col
+            break
+
+    if confidence_col is None:
+        temp["EnsembleConfidenceScore"] = 0
+        temp["EnsembleConfidenceLabel"] = "Unrated"
+        return temp
+
+    scores = pd.to_numeric(
+        temp[confidence_col],
+        errors="coerce"
     )
 
-top_plays_df = safe_read_excel(
-    TOP_PLAYS_FILE,
-    "Top_Plays"
-)
+    if confidence_col in ["RawScore", "EnsembleScore"]:
+        min_score = scores.min()
+        max_score = scores.max()
 
-value_bets_df = safe_read_excel(
-    VALUE_BETS_FILE,
-    "Value_Bets"
-)
+        if (
+            pd.notna(min_score)
+            and pd.notna(max_score)
+            and max_score > min_score
+        ):
+            scores = (
+                (scores - min_score)
+                / (max_score - min_score)
+            ) * 100
 
-fixture_df = prepare_fixture_df(
-    fixture_df
-)
+    temp["EnsembleConfidenceScore"] = (
+        scores.fillna(0)
+        .round(2)
+    )
 
-top_plays_df = prepare_fixture_df(
-    top_plays_df
-)
+    def confidence_label(score):
+        try:
+            score = float(score)
+        except Exception:
+            return "Unrated"
+
+        if score >= 85:
+            return "Elite"
+
+        if score >= 75:
+            return "High"
+
+        if score >= 60:
+            return "Medium"
+
+        if score > 0:
+            return "Low"
+
+        return "Unrated"
+
+    temp["EnsembleConfidenceLabel"] = (
+        temp["EnsembleConfidenceScore"]
+        .apply(confidence_label)
+    )
+
+    return temp
+
+
+fixture_df = load_fixture_predictions()
+ensemble_df = load_ensemble_predictions()
+fixtures_master_df = load_fixtures()
+
+top_plays_df = load_top_plays()
+value_bets_df = load_value_bets()
+
+fixture_df = prepare_fixture_df(fixture_df)
+top_plays_df = prepare_fixture_df(top_plays_df)
+value_bets_df = prepare_fixture_df(value_bets_df)
+
+fixture_df = normalise_confidence_scores(fixture_df)
+top_plays_df = normalise_confidence_scores(top_plays_df)
+value_bets_df = normalise_confidence_scores(value_bets_df)
 
 
 st.markdown(
@@ -155,7 +296,10 @@ fixture_count = len(fixture_df)
 
 elite_count = 0
 
-if not fixture_df.empty and "ElitePrediction" in fixture_df.columns:
+if (
+    not fixture_df.empty
+    and "ElitePrediction" in fixture_df.columns
+):
     elite_count = int(
         fixture_df["ElitePrediction"]
         .fillna(0)
@@ -165,15 +309,21 @@ if not fixture_df.empty and "ElitePrediction" in fixture_df.columns:
 
 league_count = 0
 
-if not fixture_df.empty and "League" in fixture_df.columns:
+if (
+    not fixture_df.empty
+    and "League" in fixture_df.columns
+):
     league_count = fixture_df["League"].nunique()
 
 avg_confidence = "-"
 
-if not fixture_df.empty and "EnsembleConfidenceScore" in fixture_df.columns:
+if (
+    not fixture_df.empty
+    and "EnsembleConfidenceScore" in fixture_df.columns
+):
     avg_confidence = round(
         fixture_df["EnsembleConfidenceScore"].mean(),
-        3
+        2
     )
 
 
@@ -220,7 +370,10 @@ filter_col1, filter_col2 = st.columns(2)
 with filter_col1:
     league_options = ["All"]
 
-    if not fixture_df.empty and "League" in fixture_df.columns:
+    if (
+        not fixture_df.empty
+        and "League" in fixture_df.columns
+    ):
         league_options.extend(
             sorted(
                 fixture_df["League"]
@@ -248,14 +401,23 @@ with filter_col2:
 
 filtered_df = fixture_df.copy()
 
-if selected_league != "All" and "League" in filtered_df.columns:
+if (
+    selected_league != "All"
+    and "League" in filtered_df.columns
+):
     filtered_df = filtered_df[
-        filtered_df["League"].astype(str) == selected_league
+        filtered_df["League"].astype(str)
+        == selected_league
     ]
 
-if confidence_filter == "Elite Only" and "ElitePrediction" in filtered_df.columns:
+if (
+    confidence_filter == "Elite Only"
+    and "ElitePrediction" in filtered_df.columns
+):
     filtered_df = filtered_df[
-        filtered_df["ElitePrediction"].fillna(0).astype(int) == 1
+        filtered_df["ElitePrediction"]
+        .fillna(0)
+        .astype(int) == 1
     ]
 
 
@@ -277,9 +439,13 @@ with tab1:
     if card_df.empty:
         card_df = filtered_df.copy()
 
-    if selected_league != "All" and "League" in card_df.columns:
+    if (
+        selected_league != "All"
+        and "League" in card_df.columns
+    ):
         card_df = card_df[
-            card_df["League"].astype(str) == selected_league
+            card_df["League"].astype(str)
+            == selected_league
         ]
 
     if card_df.empty:
@@ -298,9 +464,13 @@ with tab2:
 
     value_display_df = value_bets_df.copy()
 
-    if selected_league != "All" and "League" in value_display_df.columns:
+    if (
+        selected_league != "All"
+        and "League" in value_display_df.columns
+    ):
         value_display_df = value_display_df[
-            value_display_df["League"].astype(str) == selected_league
+            value_display_df["League"].astype(str)
+            == selected_league
         ]
 
     if value_display_df.empty:
@@ -320,6 +490,8 @@ with tab2:
                 "ValueEdgePercent",
                 "ValueRating",
                 "ValueScore",
+                "EnsembleConfidenceScore",
+                "EnsembleConfidenceLabel",
             ]
             if col in value_display_df.columns
         ]
@@ -333,8 +505,8 @@ with tab2:
     section_card(
         "What Is A Value Bet?",
         (
-            "Value bets occur when the platform probability is higher "
-            "than the implied bookmaker probability."
+            "Value bets occur when the platform probability "
+            "is higher than the implied bookmaker probability."
         ),
         "💡"
     )
@@ -344,9 +516,7 @@ with tab3:
     st.markdown("## 📅 Upcoming Fixtures")
 
     if filtered_df.empty:
-        st.warning(
-            "No fixtures available."
-        )
+        st.warning("No fixtures available.")
 
     else:
         display_cols = [
@@ -361,6 +531,7 @@ with tab3:
                 "BestGoalsPick",
                 "BestCornersPick",
                 "BettingGrade",
+                "EnsembleConfidenceScore",
                 "EnsembleConfidenceLabel",
             ]
             if col in filtered_df.columns
