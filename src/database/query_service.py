@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.database.database_connection import (
+from database.database_connection import (
     database_exists,
     run_query,
     read_table,

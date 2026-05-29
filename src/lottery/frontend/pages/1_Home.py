@@ -16,11 +16,21 @@ from lottery.frontend.components.kpi_cards import (
     last_refresh_card,
 )
 
+from database.query_service import (
+    get_platform_summary,
+    get_latest_lottery_history,
+    get_recent_football_results,
+    get_top_football_predictions,
+    get_model_accuracy_summary,
+)
+
+
 LOGO_PATH = (
     Path(__file__).resolve().parents[1]
     / "assets"
     / "hexagrandhouse_logo.png"
 )
+
 
 st.set_page_config(
     page_title="HexagrandHouse",
@@ -47,71 +57,77 @@ load_main_css()
 last_refresh_card()
 
 
-BASE_DIR = Path(__file__).resolve().parents[4]
-
-LOTTERY_RESULTS_FILE = (
-    BASE_DIR
-    / "data"
-    / "master"
-    / "lottery_historical_master.xlsx"
-)
-
-FOOTBALL_TOP_PLAYS_FILE = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "reporting"
-    / "top_plays_report.xlsx"
-)
-
-FOOTBALL_VALUE_BETS_FILE = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "value"
-    / "football_value_bets.xlsx"
-)
-
-
 @st.cache_data(ttl=300)
-def safe_read_excel(path, sheet_name=0):
-    try:
-        return pd.read_excel(
-            path,
-            sheet_name=sheet_name,
-            engine="openpyxl"
+def load_platform_data():
+    lottery_df = get_latest_lottery_history(500)
+
+    football_df = get_recent_football_results(
+        days=14,
+        limit=500
+    )
+
+    top_predictions_df = get_top_football_predictions(50)
+
+    accuracy_df = get_model_accuracy_summary()
+
+    db_summary_df = get_platform_summary()
+
+    return {
+        "lottery": lottery_df,
+        "football": football_df,
+        "top_predictions": top_predictions_df,
+        "accuracy": accuracy_df,
+        "db_summary": db_summary_df,
+    }
+
+
+platform_data = load_platform_data()
+
+lottery_df = platform_data["lottery"]
+football_df = platform_data["football"]
+top_predictions_df = platform_data["top_predictions"]
+accuracy_df = platform_data["accuracy"]
+db_summary_df = platform_data["db_summary"]
+
+
+def get_platform_health():
+    if db_summary_df.empty:
+        return "Offline"
+
+    total_rows = (
+        pd.to_numeric(
+            db_summary_df["RowCount"],
+            errors="coerce"
         )
-    except Exception:
-        return pd.DataFrame()
+        .fillna(0)
+        .sum()
+    )
+
+    if total_rows <= 0:
+        return "Warning"
+
+    return "Healthy"
+
+
+def get_total_platform_rows():
+    if db_summary_df.empty:
+        return 0
+
+    return int(
+        pd.to_numeric(
+            db_summary_df["RowCount"],
+            errors="coerce"
+        )
+        .fillna(0)
+        .sum()
+    )
 
 
 def get_latest_lottery_result(df):
     if df.empty:
         return "-"
 
-    if "DrawDate" not in df.columns:
-        return "-"
-
-    temp = df.copy()
-
-    temp["DrawDate"] = pd.to_datetime(
-        temp["DrawDate"],
-        errors="coerce"
-    )
-
-    temp = temp.dropna(
-        subset=["DrawDate"]
-    )
-
-    if temp.empty:
-        return "-"
-
-    latest = temp.sort_values(
-        by="DrawDate",
-        ascending=False
-    ).iloc[0]
+    latest = df.iloc[0]
 
     game = latest.get(
         "GameName",
@@ -121,46 +137,49 @@ def get_latest_lottery_result(df):
         )
     )
 
-    date_value = latest["DrawDate"].strftime(
-        "%Y-%m-%d"
+    date_value = pd.to_datetime(
+        latest.get("DrawDate"),
+        errors="coerce"
     )
 
-    return f"{game} — {date_value}"
+    if pd.isna(date_value):
+        return str(game)
+
+    return f"{game} — {date_value.strftime('%Y-%m-%d')}"
 
 
 def get_top_play(df):
     if df.empty:
         return "-"
 
-    required_cols = [
-        "HomeTeam",
-        "AwayTeam",
-    ]
-
-    for col in required_cols:
-        if col not in df.columns:
-            return "-"
-
-    temp = df.copy()
-
-    if "EnsembleConfidenceScore" in temp.columns:
-        temp["EnsembleConfidenceScore"] = pd.to_numeric(
-            temp["EnsembleConfidenceScore"],
-            errors="coerce"
-        )
-
-        temp = temp.sort_values(
-            by="EnsembleConfidenceScore",
-            ascending=False
-        )
-
-    top = temp.iloc[0]
+    top = df.iloc[0]
 
     home = top.get("HomeTeam", "-")
     away = top.get("AwayTeam", "-")
-    pick = top.get("PredictedResult", "Top Play")
 
-    return f"{home} vs {away} — {pick}"
+    prediction = top.get(
+        "PredictedResult",
+        top.get(
+            "ModelPick",
+            "Prediction"
+        )
+    )
+
+    confidence = top.get(
+        "EnsembleConfidenceScore",
+        top.get(
+            "ConfidenceScore",
+            "-"
+        )
+    )
+
+    if confidence != "-":
+        try:
+            confidence = round(float(confidence), 2)
+        except Exception:
+            pass
+
+    return f"{home} vs {away} — {prediction} ({confidence})"
 
 
 def get_top_value_bet(df):
@@ -184,25 +203,39 @@ def get_top_value_bet(df):
 
     home = top.get("HomeTeam", "-")
     away = top.get("AwayTeam", "-")
-    market = top.get("Market", "Value Market")
-    rating = top.get("ValueRating", "Value")
+
+    market = top.get(
+        "Market",
+        top.get(
+            "PredictedResult",
+            "Top Signal"
+        )
+    )
+
+    rating = top.get(
+        "ValueRating",
+        top.get(
+            "EnsembleConfidenceLabel",
+            "Rated"
+        )
+    )
 
     return f"{home} vs {away} — {market} ({rating})"
 
 
-lottery_df = safe_read_excel(
-    LOTTERY_RESULTS_FILE
-)
+def get_accuracy_value():
+    if accuracy_df.empty:
+        return "-"
 
-top_plays_df = safe_read_excel(
-    FOOTBALL_TOP_PLAYS_FILE,
-    "Top_Plays"
-)
+    value = accuracy_df.iloc[0].get(
+        "ResultAccuracyPct",
+        None
+    )
 
-value_bets_df = safe_read_excel(
-    FOOTBALL_VALUE_BETS_FILE,
-    "Value_Bets"
-)
+    if value is None or pd.isna(value):
+        return "-"
+
+    return f"{round(float(value), 1)}%"
 
 
 latest_lottery_result = get_latest_lottery_result(
@@ -210,12 +243,13 @@ latest_lottery_result = get_latest_lottery_result(
 )
 
 top_play = get_top_play(
-    top_plays_df
+    top_predictions_df
 )
 
 top_value_bet = get_top_value_bet(
-    value_bets_df
+    top_predictions_df
 )
+
 
 logo_col1, logo_col2 = st.columns([1, 7])
 
@@ -230,37 +264,69 @@ with logo_col2:
         """<div style="padding-top:38px;"><div style="font-size:13px;letter-spacing:4px;color:#f5b700;font-weight:800;">PREMIUM ANALYTICS PLATFORM</div><div style="font-size:15px;color:#9aa4b2;padding-top:6px;">Advanced Football & Lottery Intelligence Engine</div></div>""",
         unsafe_allow_html=True
     )
+
+
 st.markdown(
     """<div class="hgh-premium-hero"><div class="hgh-hero-left"><div class="hgh-hero-kicker">HEXAGRANDHOUSE</div><h1 class="hgh-hero-title">Data. Insight. <span>Play Smart.</span></h1><p class="hgh-hero-subtitle">A premium analytics platform for lottery intelligence, football predictions, value opportunities and responsible decision-making.</p></div><div class="hgh-hero-right"><div class="hgh-glow-card"><div class="hgh-glow-card-title">Today’s Signal</div><div class="hgh-glow-card-main">Premium Picks</div><div class="hgh-glow-card-sub">Curated outputs from active models, confidence scoring and market-value checks.</div></div></div></div>""",
     unsafe_allow_html=True
 )
 
 
-button_col1, button_col2, button_col3 = st.columns(
-    [
-        1,
-        1,
-        6,
-    ]
-)
+button_col1, button_col2, button_col3 = st.columns([1, 1, 6])
 
 with button_col1:
     if st.button(
         "⚽ Football",
         use_container_width=True
     ):
-        st.switch_page(
-            "pages/3_Football.py"
-        )
+        st.switch_page("pages/3_Football.py")
 
 with button_col2:
     if st.button(
         "🎲 Lottery",
         use_container_width=True
     ):
-        st.switch_page(
-            "pages/2_Lottery.py"
-        )
+        st.switch_page("pages/2_Lottery.py")
+
+
+st.divider()
+
+
+st.markdown("## 🧠 Platform Control Center")
+
+d1, d2, d3, d4 = st.columns(4)
+
+with d1:
+    kpi_card(
+        "Platform Status",
+        get_platform_health(),
+        "Database & pipelines",
+        "🟢"
+    )
+
+with d2:
+    kpi_card(
+        "Database Rows",
+        f"{get_total_platform_rows():,}",
+        "Central warehouse records",
+        "🗄️"
+    )
+
+with d3:
+    kpi_card(
+        "Football Results",
+        f"{len(football_df):,}",
+        "Recent completed matches",
+        "⚽"
+    )
+
+with d4:
+    kpi_card(
+        "Model Accuracy",
+        get_accuracy_value(),
+        "Historical football scoring",
+        "🎯"
+    )
 
 
 st.divider()
@@ -279,7 +345,7 @@ with h1:
 
 with h2:
     section_card(
-        "Best Value Bet",
+        "Best Value Signal",
         top_value_bet,
         "💰"
     )
@@ -309,9 +375,7 @@ with module_col1:
         "Open Football",
         use_container_width=True
     ):
-        st.switch_page(
-            "pages/3_Football.py"
-        )
+        st.switch_page("pages/3_Football.py")
 
 with module_col2:
     st.markdown(
@@ -323,9 +387,22 @@ with module_col2:
         "Open Lottery",
         use_container_width=True
     ):
-        st.switch_page(
-            "pages/2_Lottery.py"
-        )
+        st.switch_page("pages/2_Lottery.py")
+
+
+st.divider()
+
+
+st.markdown("## 🗄️ Database Tables")
+
+if db_summary_df.empty:
+    st.warning("Database summary unavailable.")
+else:
+    st.dataframe(
+        db_summary_df,
+        use_container_width=True,
+        height=300
+    )
 
 
 st.divider()
@@ -368,7 +445,7 @@ section_card(
     (
         "HexagrandHouse is being shaped into a clean premium user platform. "
         "The engine stays powerful behind the scenes, while users see simple, useful, "
-        "well-designed decision pages."
+        "well-designed decision pages backed by a central SQLite warehouse."
     ),
     "🚀"
 )
