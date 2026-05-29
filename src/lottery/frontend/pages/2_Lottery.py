@@ -16,12 +16,16 @@ from lottery.frontend.components.kpi_cards import (
     last_refresh_card,
 )
 
-from lottery.frontend.components.charts import (
-    plot_bar_chart,
-)
+from lottery.frontend.components.charts import plot_bar_chart
 
 from lottery.frontend.components.lottery_prediction_card import (
     render_lottery_prediction_cards,
+)
+
+from database.database_connection import (
+    database_exists,
+    read_lottery_predictions,
+    read_lottery_history,
 )
 
 
@@ -33,11 +37,7 @@ st.set_page_config(
 
 
 def load_main_css():
-    css_path = (
-        Path(__file__).resolve().parents[1]
-        / "styles"
-        / "main.css"
-    )
+    css_path = Path(__file__).resolve().parents[1] / "styles" / "main.css"
 
     with open(css_path, "r", encoding="utf-8") as f:
         st.markdown(
@@ -53,10 +53,7 @@ last_refresh_card()
 BASE_DIR = Path(__file__).resolve().parents[4]
 
 RESULTS_FILE = (
-    BASE_DIR
-    / "data"
-    / "master"
-    / "lottery_historical_master.xlsx"
+    BASE_DIR / "data" / "master" / "lottery_historical_master.xlsx"
 )
 
 PREDICTIONS_FILE = (
@@ -88,6 +85,52 @@ def safe_read_excel(path, sheet_name=0):
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=300)
+def load_predictions_data():
+    if database_exists():
+        df = read_lottery_predictions()
+
+        if not df.empty:
+            return df
+
+    df = safe_read_excel(
+        PREDICTIONS_FILE,
+        "All_Ensemble_Predictions"
+    )
+
+    if df.empty:
+        df = safe_read_excel(PREDICTIONS_FILE)
+
+    return df
+
+
+@st.cache_data(ttl=300)
+def load_results_data():
+    if database_exists():
+        df = read_lottery_history()
+
+        if not df.empty:
+            return df
+
+    return safe_read_excel(
+        RESULTS_FILE,
+        "Historical_Results"
+    )
+
+
+@st.cache_data(ttl=300)
+def load_models_data():
+    df = safe_read_excel(
+        MODEL_FILE,
+        "Unified_Leaderboard"
+    )
+
+    if df.empty:
+        df = safe_read_excel(MODEL_FILE)
+
+    return df
+
+
 def clean_text(value):
     if value is None or pd.isna(value):
         return ""
@@ -115,26 +158,82 @@ def add_game_display_column(df):
 
         base_name = game_name or game_family or "Unknown"
 
-        if base_name.upper() == "UK49S":
+        if base_name.upper() == "UK49S" or game_family.upper() == "UK49S":
             if draw_type:
                 game_display = f"UK49s {draw_type}"
             else:
                 game_display = "UK49s"
-
-        elif game_family.upper() == "UK49S":
-            if draw_type:
-                game_display = f"UK49s {draw_type}"
-            else:
-                game_display = base_name
-
         else:
             game_display = base_name
 
-        game_display_values.append(
-            game_display.strip()
-        )
+        game_display_values.append(game_display.strip())
 
     df["GameDisplay"] = game_display_values
+
+    return df
+
+
+def normalise_confidence_columns(df):
+    if df.empty:
+        return df
+
+    df = df.copy()
+
+    possible_confidence_cols = [
+        "ConfidenceScore",
+        "Confidence",
+        "EnsembleConfidence",
+        "EnsembleScore",
+        "RawScore",
+        "FitnessScore",
+    ]
+
+    source_col = None
+
+    for col in possible_confidence_cols:
+        if col in df.columns:
+            source_col = col
+            break
+
+    if source_col is None:
+        df["ConfidenceScore"] = 0
+        df["ConfidenceLabel"] = "Unrated"
+        return df
+
+    scores = pd.to_numeric(
+        df[source_col],
+        errors="coerce"
+    )
+
+    if source_col in ["RawScore", "FitnessScore", "EnsembleScore"]:
+        min_score = scores.min()
+        max_score = scores.max()
+
+        if pd.notna(min_score) and pd.notna(max_score) and max_score > min_score:
+            scores = ((scores - min_score) / (max_score - min_score)) * 100
+        else:
+            scores = 0
+
+    df["ConfidenceScore"] = scores.fillna(0).round(1)
+
+    def label_confidence(value):
+        try:
+            value = float(value)
+        except Exception:
+            return "Unrated"
+
+        if value >= 85:
+            return "Elite"
+        if value >= 75:
+            return "High"
+        if value >= 60:
+            return "Medium"
+        if value > 0:
+            return "Low"
+
+        return "Unrated"
+
+    df["ConfidenceLabel"] = df["ConfidenceScore"].apply(label_confidence)
 
     return df
 
@@ -173,34 +272,15 @@ def get_latest_results(df, limit=10):
     return temp.head(limit)
 
 
-results_df = safe_read_excel(
-    RESULTS_FILE
-)
-
-predictions_df = safe_read_excel(
-    PREDICTIONS_FILE,
-    "All_Ensemble_Predictions"
-)
-
-if predictions_df.empty:
-    predictions_df = safe_read_excel(
-        PREDICTIONS_FILE
-    )
-
-models_df = safe_read_excel(
-    MODEL_FILE,
-    "Unified_Leaderboard"
-)
-
-if models_df.empty:
-    models_df = safe_read_excel(
-        MODEL_FILE
-    )
-
+results_df = load_results_data()
+predictions_df = load_predictions_data()
+models_df = load_models_data()
 
 results_df = add_game_display_column(results_df)
 predictions_df = add_game_display_column(predictions_df)
 models_df = add_game_display_column(models_df)
+
+predictions_df = normalise_confidence_columns(predictions_df)
 
 
 st.markdown(
@@ -213,11 +293,7 @@ st.divider()
 
 game_options = ["All"]
 
-for df in [
-    predictions_df,
-    results_df,
-    models_df,
-]:
+for df in [predictions_df, results_df, models_df]:
     if not df.empty and "GameDisplay" in df.columns:
         game_options.extend(
             df["GameDisplay"]
@@ -277,9 +353,7 @@ if not latest_results_df.empty and "DrawDate" in latest_results_df.columns:
     )
 
     if not pd.isna(latest_draw_value):
-        latest_draw = latest_draw_value.strftime(
-            "%Y-%m-%d"
-        )
+        latest_draw = latest_draw_value.strftime("%Y-%m-%d")
 
 
 k1, k2, k3, k4 = st.columns(4)
@@ -334,9 +408,7 @@ with tab1:
     st.markdown("## 🎯 Curated Prediction Cards")
 
     if filtered_predictions_df.empty:
-        st.warning(
-            "No prediction data available for the selected game."
-        )
+        st.warning("No prediction data available for the selected game.")
     else:
         render_lottery_prediction_cards(
             filtered_predictions_df,
@@ -348,7 +420,8 @@ with tab1:
         (
             "Each card represents a generated lottery selection. "
             "The number balls show the selection, while the supporting metrics "
-            "show balance indicators such as high/low split, odd/even split and total sum."
+            "show balance indicators such as high/low split, odd/even split, "
+            "total sum and confidence level."
         ),
         "🎲"
     )
@@ -358,9 +431,7 @@ with tab2:
     st.markdown("## 📋 Prediction Table")
 
     if filtered_predictions_df.empty:
-        st.warning(
-            "No prediction data available for the selected game."
-        )
+        st.warning("No prediction data available for the selected game.")
     else:
         display_cols = [
             col for col in [
@@ -383,7 +454,9 @@ with tab2:
                 "OddCount",
                 "EvenCount",
                 "ConfidenceScore",
+                "ConfidenceLabel",
                 "ModelName",
+                "ModelVersion",
             ]
             if col in filtered_predictions_df.columns
         ]
@@ -399,9 +472,7 @@ with tab3:
     st.markdown("## 📊 Latest Lottery Results")
 
     if latest_results_df.empty:
-        st.warning(
-            "No results data available for the selected game."
-        )
+        st.warning("No results data available for the selected game.")
     else:
         display_cols = [
             col for col in [
@@ -434,10 +505,7 @@ with tab3:
             .reset_index()
         )
 
-        chart_df.columns = [
-            "Game",
-            "Count",
-        ]
+        chart_df.columns = ["Game", "Count"]
 
         st.markdown("### 📈 Result Coverage")
 
@@ -453,9 +521,7 @@ with tab4:
     st.markdown("## 🏆 Model Intelligence")
 
     if filtered_models_df.empty:
-        st.warning(
-            "No model data available for the selected game."
-        )
+        st.warning("No model data available for the selected game.")
     else:
         display_cols = [
             col for col in [
