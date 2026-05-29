@@ -71,44 +71,65 @@ dist/
 # RAW SOURCE DATA
 # =========================================================
 
-data/football/raw/
+data/raw/
 data/lottery/raw/
+data/football/raw/
 
 # =========================================================
-# GENERATED OUTPUTS
+# GENERATED / HEAVY OUTPUTS
 # =========================================================
 
-data/exports/
+# Lottery
+data/exports/optimization/
 data/processed/
 
-data/football/exports/
+# Football
 data/football/processed/
 data/football/logs/
 
+# General logs
 data/logs/
 
-# =========================================================
-# LARGE SNAPSHOTS / BACKTESTS
-# =========================================================
-
+# Large snapshot archives
 data/football/exports/backtesting/prediction_snapshots/
 
 # =========================================================
-# KEEP THESE TRACKED
+# KEEP THESE TRACKED (DEPLOYMENT FILES)
 # =========================================================
 
+# Master historical files
 !data/master/
 !data/master/*.xlsx
 
 !data/football/master/
 !data/football/master/*.xlsx
 
+# Final frontend lottery predictions
+!data/exports/
 !data/exports/final_predictions/
 !data/exports/final_predictions/*.xlsx
 
+# Football frontend prediction outputs
+!data/football/exports/
 !data/football/exports/predictions/
 !data/football/exports/predictions/*.xlsx
 
+# Football backtesting summaries
 !data/football/exports/backtesting/
 !data/football/exports/backtesting/*.xlsx
+
+# =========================================================
+# DATABASES
+# =========================================================
+
+*.sqlite
+*.sqlite3
+*.db
+
+# =========================================================
+# FUTURE CLOUD STORAGE
+# =========================================================
+
+storage/
+backups/
 ```
