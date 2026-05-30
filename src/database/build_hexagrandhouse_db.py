@@ -46,10 +46,7 @@ FOOTBALL_FIXTURES_FILE = (
 # =========================================================
 
 def ensure_database_folder():
-    DB_FILE.parent.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+    DB_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 
 def list_excel_sheets(path):
@@ -57,52 +54,12 @@ def list_excel_sheets(path):
         if not path.exists():
             return []
 
-        excel_file = pd.ExcelFile(
-            path,
-            engine="openpyxl"
-        )
+        excel_file = pd.ExcelFile(path, engine="openpyxl")
 
         return excel_file.sheet_names
 
     except Exception:
         return []
-
-
-def safe_read_excel(path, sheet_name=None):
-    try:
-        if not path.exists():
-            print(f"Missing file: {path}")
-            return pd.DataFrame()
-
-        available_sheets = list_excel_sheets(path)
-
-        if not available_sheets:
-            print(f"No readable sheets found: {path}")
-            return pd.DataFrame()
-
-        selected_sheet = None
-
-        if sheet_name and sheet_name in available_sheets:
-            selected_sheet = sheet_name
-        else:
-            selected_sheet = available_sheets[0]
-
-            if sheet_name:
-                print(
-                    f"Sheet '{sheet_name}' not found in {path.name}. "
-                    f"Using '{selected_sheet}' instead."
-                )
-
-        return pd.read_excel(
-            path,
-            sheet_name=selected_sheet,
-            engine="openpyxl"
-        )
-
-    except Exception as e:
-        print(f"Could not read: {path}")
-        print(f"Error: {e}")
-        return pd.DataFrame()
 
 
 def safe_read_excel_preferred(path, preferred_sheets):
@@ -119,11 +76,7 @@ def safe_read_excel_preferred(path, preferred_sheets):
 
         for sheet in preferred_sheets:
             if sheet in available_sheets:
-                return pd.read_excel(
-                    path,
-                    sheet_name=sheet,
-                    engine="openpyxl"
-                )
+                return pd.read_excel(path, sheet_name=sheet, engine="openpyxl")
 
         fallback_sheet = available_sheets[0]
 
@@ -132,11 +85,7 @@ def safe_read_excel_preferred(path, preferred_sheets):
             f"Using '{fallback_sheet}' instead."
         )
 
-        return pd.read_excel(
-            path,
-            sheet_name=fallback_sheet,
-            engine="openpyxl"
-        )
+        return pd.read_excel(path, sheet_name=fallback_sheet, engine="openpyxl")
 
     except Exception as e:
         print(f"Could not read: {path}")
@@ -180,12 +129,10 @@ def normalise_dates(df):
             or "generatedat" in col_lower
             or "backtestedat" in col_lower
             or "updatedat" in col_lower
+            or "loadedat" in col_lower
         ):
             try:
-                df[col] = pd.to_datetime(
-                    df[col],
-                    errors="coerce"
-                ).astype(str)
+                df[col] = pd.to_datetime(df[col], errors="coerce").astype(str)
             except Exception:
                 pass
 
@@ -224,6 +171,7 @@ def create_indexes(conn):
         "CREATE INDEX IF NOT EXISTS idx_football_ensemble_league ON football_ensemble_predictions(League);",
         "CREATE INDEX IF NOT EXISTS idx_football_backtest_date ON football_backtest_history(FixtureDate);",
         "CREATE INDEX IF NOT EXISTS idx_football_fixtures_date ON football_fixtures(FixtureDate);",
+        "CREATE INDEX IF NOT EXISTS idx_football_fixtures_league ON football_fixtures(League);",
     ]
 
     for sql in index_sql:
@@ -233,6 +181,60 @@ def create_indexes(conn):
             pass
 
     conn.commit()
+
+
+# =========================================================
+# TRANSFORMS
+# =========================================================
+
+def prepare_football_fixtures(df):
+    if df.empty:
+        return df
+
+    df = df.copy()
+
+    rename_map = {
+        "Date": "FixtureDate",
+        "Time": "KickoffTime",
+        "Home": "HomeTeam",
+        "Away": "AwayTeam",
+        "Home_Team": "HomeTeam",
+        "Away_Team": "AwayTeam",
+        "HomeTeam": "HomeTeam",
+        "AwayTeam": "AwayTeam",
+    }
+
+    existing_rename_map = {
+        old_col: new_col
+        for old_col, new_col in rename_map.items()
+        if old_col in df.columns
+    }
+
+    df = df.rename(columns=existing_rename_map)
+
+    if "FixtureDate" in df.columns:
+        df["FixtureDate"] = pd.to_datetime(
+            df["FixtureDate"],
+            errors="coerce"
+        )
+
+    if "KickoffTime" in df.columns:
+        df["KickoffTime"] = df["KickoffTime"].astype(str)
+
+    if "FixtureDate" in df.columns:
+        df = df.dropna(subset=["FixtureDate"])
+
+    # Keep future/current fixtures only where possible.
+    if "FixtureDate" in df.columns:
+        today = pd.Timestamp.today().normalize()
+
+        df = df[
+            df["FixtureDate"] >= today
+        ].copy()
+
+    df["LoadedAt"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    return df
 
 
 # =========================================================
@@ -307,7 +309,7 @@ def load_football_backtest_history():
 
 
 def load_football_fixtures():
-    return safe_read_excel_preferred(
+    fixtures_df = safe_read_excel_preferred(
         FOOTBALL_FIXTURES_FILE,
         [
             "Football_Fixtures",
@@ -315,6 +317,8 @@ def load_football_fixtures():
             "Sheet1",
         ]
     )
+
+    return prepare_football_fixtures(fixtures_df)
 
 
 # =========================================================
@@ -333,47 +337,13 @@ def build_hexagrandhouse_db():
     football_fixtures = load_football_fixtures()
 
     with sqlite3.connect(DB_FILE) as conn:
-        write_table(
-            conn,
-            lottery_history,
-            "lottery_history"
-        )
-
-        write_table(
-            conn,
-            football_history,
-            "football_history"
-        )
-
-        write_table(
-            conn,
-            lottery_predictions,
-            "lottery_predictions"
-        )
-
-        write_table(
-            conn,
-            football_predictions,
-            "football_predictions"
-        )
-
-        write_table(
-            conn,
-            football_ensemble_predictions,
-            "football_ensemble_predictions"
-        )
-
-        write_table(
-            conn,
-            football_backtest_history,
-            "football_backtest_history"
-        )
-
-        write_table(
-            conn,
-            football_fixtures,
-            "football_fixtures"
-        )
+        write_table(conn, lottery_history, "lottery_history")
+        write_table(conn, football_history, "football_history")
+        write_table(conn, lottery_predictions, "lottery_predictions")
+        write_table(conn, football_predictions, "football_predictions")
+        write_table(conn, football_ensemble_predictions, "football_ensemble_predictions")
+        write_table(conn, football_backtest_history, "football_backtest_history")
+        write_table(conn, football_fixtures, "football_fixtures")
 
         create_indexes(conn)
 
