@@ -20,9 +20,7 @@ from lottery.frontend.components.football_prediction_card import (
     render_football_prediction_cards,
 )
 
-from lottery.frontend.components.charts import (
-    plot_bar_chart,
-)
+from lottery.frontend.components.charts import plot_bar_chart
 
 from database.database_connection import (
     database_exists,
@@ -40,11 +38,7 @@ st.set_page_config(
 
 
 def load_main_css():
-    css_path = (
-        Path(__file__).resolve().parents[1]
-        / "styles"
-        / "main.css"
-    )
+    css_path = Path(__file__).resolve().parents[1] / "styles" / "main.css"
 
     with open(css_path, "r", encoding="utf-8") as f:
         st.markdown(
@@ -130,7 +124,7 @@ def load_ensemble_predictions():
 
 
 @st.cache_data(ttl=300)
-def load_fixtures():
+def load_upcoming_fixtures():
     if database_exists():
         df = read_football_fixtures()
 
@@ -172,6 +166,17 @@ def prepare_fixture_df(df):
 
     temp = df.copy()
 
+    for date_col in [
+        "FixtureDate",
+        "FixtureDateTime",
+        "MatchDate",
+    ]:
+        if date_col in temp.columns:
+            temp[date_col] = pd.to_datetime(
+                temp[date_col],
+                errors="coerce"
+            )
+
     numeric_cols = [
         "EnsembleConfidenceScore",
         "SignalCount",
@@ -179,6 +184,15 @@ def prepare_fixture_df(df):
         "ValueScore",
         "ModelProbability",
         "PredictedResultProbability",
+        "Bet365HomeOdds",
+        "Bet365DrawOdds",
+        "Bet365AwayOdds",
+        "AverageHomeOdds",
+        "AverageDrawOdds",
+        "AverageAwayOdds",
+        "MaxHomeOdds",
+        "MaxDrawOdds",
+        "MaxAwayOdds",
     ]
 
     for col in numeric_cols:
@@ -230,15 +244,9 @@ def normalise_confidence_scores(df):
             and pd.notna(max_score)
             and max_score > min_score
         ):
-            scores = (
-                (scores - min_score)
-                / (max_score - min_score)
-            ) * 100
+            scores = ((scores - min_score) / (max_score - min_score)) * 100
 
-    temp["EnsembleConfidenceScore"] = (
-        scores.fillna(0)
-        .round(2)
-    )
+    temp["EnsembleConfidenceScore"] = scores.fillna(0).round(2)
 
     def confidence_label(score):
         try:
@@ -248,13 +256,10 @@ def normalise_confidence_scores(df):
 
         if score >= 85:
             return "Elite"
-
         if score >= 75:
             return "High"
-
         if score >= 60:
             return "Medium"
-
         if score > 0:
             return "Low"
 
@@ -268,40 +273,56 @@ def normalise_confidence_scores(df):
     return temp
 
 
-fixture_df = load_fixture_predictions()
+def get_display_fixture_df(predictions_df, upcoming_df):
+    if not predictions_df.empty:
+        return predictions_df.copy()
+
+    return upcoming_df.copy()
+
+
+fixture_predictions_df = load_fixture_predictions()
 ensemble_df = load_ensemble_predictions()
-fixtures_master_df = load_fixtures()
+upcoming_fixtures_df = load_upcoming_fixtures()
 
 top_plays_df = load_top_plays()
 value_bets_df = load_value_bets()
 
-fixture_df = prepare_fixture_df(fixture_df)
+fixture_predictions_df = prepare_fixture_df(fixture_predictions_df)
+ensemble_df = prepare_fixture_df(ensemble_df)
+upcoming_fixtures_df = prepare_fixture_df(upcoming_fixtures_df)
 top_plays_df = prepare_fixture_df(top_plays_df)
 value_bets_df = prepare_fixture_df(value_bets_df)
 
-fixture_df = normalise_confidence_scores(fixture_df)
+fixture_predictions_df = normalise_confidence_scores(fixture_predictions_df)
 top_plays_df = normalise_confidence_scores(top_plays_df)
 value_bets_df = normalise_confidence_scores(value_bets_df)
 
+display_fixture_df = get_display_fixture_df(
+    fixture_predictions_df,
+    upcoming_fixtures_df
+)
+
 
 st.markdown(
-    """<div class="hgh-premium-hero-small"><div class="hgh-hero-kicker">FOOTBALL INTELLIGENCE</div><h1 class="hgh-hero-title-small">Elite Football Insights</h1><p class="hgh-hero-subtitle-small">Curated football predictions, top plays and value opportunities powered by historical form, ensemble scoring and market analysis.</p></div>""",
+    """<div class="hgh-premium-hero-small"><div class="hgh-hero-kicker">FOOTBALL INTELLIGENCE</div><h1 class="hgh-hero-title-small">Elite Football Insights</h1><p class="hgh-hero-subtitle-small">Curated football predictions, upcoming fixtures and value opportunities powered by historical form, ensemble scoring and market analysis.</p></div>""",
     unsafe_allow_html=True
 )
 
 st.divider()
 
 
-fixture_count = len(fixture_df)
+fixture_count = len(display_fixture_df)
+
+upcoming_count = len(upcoming_fixtures_df)
 
 elite_count = 0
 
 if (
-    not fixture_df.empty
-    and "ElitePrediction" in fixture_df.columns
+    not fixture_predictions_df.empty
+    and "ElitePrediction" in fixture_predictions_df.columns
 ):
     elite_count = int(
-        fixture_df["ElitePrediction"]
+        fixture_predictions_df["ElitePrediction"]
         .fillna(0)
         .astype(int)
         .sum()
@@ -309,20 +330,17 @@ if (
 
 league_count = 0
 
-if (
-    not fixture_df.empty
-    and "League" in fixture_df.columns
-):
-    league_count = fixture_df["League"].nunique()
+if not display_fixture_df.empty and "League" in display_fixture_df.columns:
+    league_count = display_fixture_df["League"].nunique()
 
 avg_confidence = "-"
 
 if (
-    not fixture_df.empty
-    and "EnsembleConfidenceScore" in fixture_df.columns
+    not fixture_predictions_df.empty
+    and "EnsembleConfidenceScore" in fixture_predictions_df.columns
 ):
     avg_confidence = round(
-        fixture_df["EnsembleConfidenceScore"].mean(),
+        fixture_predictions_df["EnsembleConfidenceScore"].mean(),
         2
     )
 
@@ -333,16 +351,16 @@ with k1:
     kpi_card(
         "Fixtures",
         fixture_count,
-        "Upcoming predictions",
+        "Visible football rows",
         "⚽"
     )
 
 with k2:
     kpi_card(
-        "Elite Picks",
-        elite_count,
-        "High-confidence fixtures",
-        "🔥"
+        "Upcoming",
+        upcoming_count,
+        "Future fixtures in DB",
+        "📅"
     )
 
 with k3:
@@ -357,7 +375,7 @@ with k4:
     kpi_card(
         "Avg Confidence",
         avg_confidence,
-        "Ensemble score",
+        "Prediction score",
         "📈"
     )
 
@@ -370,13 +388,10 @@ filter_col1, filter_col2 = st.columns(2)
 with filter_col1:
     league_options = ["All"]
 
-    if (
-        not fixture_df.empty
-        and "League" in fixture_df.columns
-    ):
+    if not display_fixture_df.empty and "League" in display_fixture_df.columns:
         league_options.extend(
             sorted(
-                fixture_df["League"]
+                display_fixture_df["League"]
                 .dropna()
                 .astype(str)
                 .unique()
@@ -399,15 +414,11 @@ with filter_col2:
     )
 
 
-filtered_df = fixture_df.copy()
+filtered_df = display_fixture_df.copy()
 
-if (
-    selected_league != "All"
-    and "League" in filtered_df.columns
-):
+if selected_league != "All" and "League" in filtered_df.columns:
     filtered_df = filtered_df[
-        filtered_df["League"].astype(str)
-        == selected_league
+        filtered_df["League"].astype(str) == selected_league
     ]
 
 if (
@@ -415,9 +426,7 @@ if (
     and "ElitePrediction" in filtered_df.columns
 ):
     filtered_df = filtered_df[
-        filtered_df["ElitePrediction"]
-        .fillna(0)
-        .astype(int) == 1
+        filtered_df["ElitePrediction"].fillna(0).astype(int) == 1
     ]
 
 
@@ -437,20 +446,16 @@ with tab1:
     card_df = top_plays_df.copy()
 
     if card_df.empty:
-        card_df = filtered_df.copy()
+        card_df = fixture_predictions_df.copy()
 
-    if (
-        selected_league != "All"
-        and "League" in card_df.columns
-    ):
+    if selected_league != "All" and "League" in card_df.columns:
         card_df = card_df[
-            card_df["League"].astype(str)
-            == selected_league
+            card_df["League"].astype(str) == selected_league
         ]
 
     if card_df.empty:
         st.warning(
-            "No football predictions available."
+            "No prediction cards available yet. Upcoming fixtures are available in the Fixtures tab."
         )
     else:
         render_football_prediction_cards(
@@ -464,18 +469,14 @@ with tab2:
 
     value_display_df = value_bets_df.copy()
 
-    if (
-        selected_league != "All"
-        and "League" in value_display_df.columns
-    ):
+    if selected_league != "All" and "League" in value_display_df.columns:
         value_display_df = value_display_df[
-            value_display_df["League"].astype(str)
-            == selected_league
+            value_display_df["League"].astype(str) == selected_league
         ]
 
     if value_display_df.empty:
         st.warning(
-            "No value bet data available."
+            "No value bet data available yet."
         )
 
     else:
@@ -515,60 +516,76 @@ with tab2:
 with tab3:
     st.markdown("## 📅 Upcoming Fixtures")
 
-    if filtered_df.empty:
-        st.warning("No fixtures available.")
+    fixtures_tab_df = upcoming_fixtures_df.copy()
 
+    if selected_league != "All" and "League" in fixtures_tab_df.columns:
+        fixtures_tab_df = fixtures_tab_df[
+            fixtures_tab_df["League"].astype(str) == selected_league
+        ]
+
+    if fixtures_tab_df.empty:
+        st.warning("No upcoming fixtures available.")
     else:
+        if "FixtureDateTime" in fixtures_tab_df.columns:
+            fixtures_tab_df = fixtures_tab_df.sort_values(
+                by="FixtureDateTime",
+                ascending=True
+            )
+
         display_cols = [
             col for col in [
                 "FixtureDate",
                 "KickoffTime",
                 "League",
+                "Country",
                 "HomeTeam",
                 "AwayTeam",
-                "PredictedResult",
-                "PredictedResultProbability",
-                "BestGoalsPick",
-                "BestCornersPick",
-                "BettingGrade",
-                "EnsembleConfidenceScore",
-                "EnsembleConfidenceLabel",
+                "Bet365HomeOdds",
+                "Bet365DrawOdds",
+                "Bet365AwayOdds",
+                "AverageHomeOdds",
+                "AverageDrawOdds",
+                "AverageAwayOdds",
+                "SourceName",
             ]
-            if col in filtered_df.columns
+            if col in fixtures_tab_df.columns
         ]
 
         st.dataframe(
-            filtered_df[display_cols],
+            fixtures_tab_df[display_cols],
             use_container_width=True,
             height=700
         )
 
 
 with tab4:
-    st.markdown("## 📊 League Confidence")
+    st.markdown("## 📊 League Fixture Coverage")
 
-    if (
-        not filtered_df.empty
-        and "League" in filtered_df.columns
-        and "EnsembleConfidenceScore" in filtered_df.columns
-    ):
+    league_source_df = display_fixture_df.copy()
+
+    if selected_league != "All" and "League" in league_source_df.columns:
+        league_source_df = league_source_df[
+            league_source_df["League"].astype(str) == selected_league
+        ]
+
+    if not league_source_df.empty and "League" in league_source_df.columns:
         chart_df = (
-            filtered_df
-            .groupby("League")["EnsembleConfidenceScore"]
-            .mean()
-            .reset_index()
+            league_source_df
+            .groupby("League")
+            .size()
+            .reset_index(name="FixtureCount")
         )
 
         chart_df = chart_df.sort_values(
-            by="EnsembleConfidenceScore",
+            by="FixtureCount",
             ascending=False
         )
 
         plot_bar_chart(
             chart_df,
             x_col="League",
-            y_col="EnsembleConfidenceScore",
-            title="Average Confidence by League"
+            y_col="FixtureCount",
+            title="Upcoming Fixtures by League"
         )
 
         st.dataframe(
@@ -576,7 +593,6 @@ with tab4:
             use_container_width=True,
             height=500
         )
-
     else:
         st.warning(
             "No league analytics available."
