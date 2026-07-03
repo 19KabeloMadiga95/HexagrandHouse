@@ -4,6 +4,13 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from src.lottery.config.lottery_game_rules import (
+    get_current_rule,
+    get_regular_range,
+    get_bonus_range,
+    get_max_historical_bonus_number,
+)
+
 
 # =========================================================
 # PROJECT PATHS
@@ -26,6 +33,14 @@ PREDICTIONS_PER_DRAW = 10
 
 REGULAR_COLS = ["N1", "N2", "N3", "N4", "N5"]
 BONUS_COL = "Bonus"
+
+POWERBALL_CURRENT_RULE = get_current_rule("PowerBall")
+REGULAR_RANGE = get_regular_range(POWERBALL_CURRENT_RULE)
+BONUS_RANGE = get_bonus_range(POWERBALL_CURRENT_RULE)
+HISTORICAL_BONUS_RANGE = range(
+    POWERBALL_CURRENT_RULE.bonus_min,
+    (get_max_historical_bonus_number("PowerBall") or POWERBALL_CURRENT_RULE.bonus_max) + 1,
+)
 
 RNG_SEED = 42
 _rng = np.random.default_rng(RNG_SEED)
@@ -95,12 +110,12 @@ def get_regular_list(row):
 def build_weighted_number_pool(train_df):
     regular_counts = {}
 
-    for n in range(1, 51):
+    for n in REGULAR_RANGE:
         regular_counts[n] = 1.0
 
     bonus_counts = {}
 
-    for n in range(1, 21):
+    for n in HISTORICAL_BONUS_RANGE:
         bonus_counts[n] = 1.0
 
     for idx, row in train_df.iterrows():
@@ -123,6 +138,25 @@ def build_weighted_number_pool(train_df):
         n: bonus_counts[n] / bonus_total
         for n in bonus_counts
     }
+
+    # Learn from historical 1-20 PowerBall values, but only generate
+    # using the current legal prediction range, now 1-16.
+    bonus_probs = {
+        n: bonus_probs.get(n, 0.0)
+        for n in BONUS_RANGE
+    }
+
+    filtered_total = sum(bonus_probs.values())
+    if filtered_total <= 0:
+        bonus_probs = {
+            n: 1 / len(BONUS_RANGE)
+            for n in BONUS_RANGE
+        }
+    else:
+        bonus_probs = {
+            n: value / filtered_total
+            for n, value in bonus_probs.items()
+        }
 
     return regular_probs, bonus_probs
 
@@ -197,7 +231,7 @@ def generate_random_predictions(prediction_count=PREDICTIONS_PER_DRAW):
     while len(predictions) < prediction_count:
         regulars = sorted(
             _rng.choice(
-                np.arange(1, 51),
+                np.array(REGULAR_RANGE),
                 size=5,
                 replace=False
             ).tolist()
@@ -205,7 +239,7 @@ def generate_random_predictions(prediction_count=PREDICTIONS_PER_DRAW):
 
         bonus = int(
             _rng.choice(
-                np.arange(1, 21),
+                np.array(BONUS_RANGE),
                 size=1
             )[0]
         )

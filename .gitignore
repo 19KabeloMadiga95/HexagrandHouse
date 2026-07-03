@@ -10,6 +10,7 @@ __pycache__/
 *.pyo
 *.pyd
 .ipynb_checkpoints/
+.pytest_cache/
 
 # =========================================================
 # ENVIRONMENT
@@ -17,6 +18,12 @@ __pycache__/
 
 .env
 *.env
+
+# Cleanup archives
+_archive/
+
+# Cleanup archives
+_archive/
 
 # =========================================================
 # LOGS
@@ -79,44 +86,40 @@ data/football/raw/
 # GENERATED / HEAVY OUTPUTS
 # =========================================================
 
-# Lottery
-data/exports/optimization/
-data/processed/
+# Raw imports
+data/raw/
+data/lottery/raw/
+data/football/raw/
 
-# Football
+# Processed datasets
+data/processed/
 data/football/processed/
+
+# Logs
+data/logs/
 data/football/logs/
 
-# General logs
-data/logs/
-
-# Large snapshot archives
-data/football/exports/backtesting/prediction_snapshots/
-
 # =========================================================
-# KEEP THESE TRACKED (DEPLOYMENT FILES)
+# GENERATED EXPORTS
+# (Recreated automatically by the pipelines)
 # =========================================================
 
-# Master historical files
+data/exports/
+data/football/exports/
+
+# Keep empty folders
+!data/exports/.gitkeep
+!data/football/exports/.gitkeep
+
+# =========================================================
+# MASTER DATA (SOURCE OF TRUTH)
+# =========================================================
+
 !data/master/
 !data/master/*.xlsx
 
 !data/football/master/
 !data/football/master/*.xlsx
-
-# Final frontend lottery predictions
-!data/exports/
-!data/exports/final_predictions/
-!data/exports/final_predictions/*.xlsx
-
-# Football frontend prediction outputs
-!data/football/exports/
-!data/football/exports/predictions/
-!data/football/exports/predictions/*.xlsx
-
-# Football backtesting summaries
-!data/football/exports/backtesting/
-!data/football/exports/backtesting/*.xlsx
 
 # =========================================================
 # DATABASES
@@ -130,6 +133,15 @@ data/football/exports/backtesting/prediction_snapshots/
 # FUTURE CLOUD STORAGE
 # =========================================================
 
+data/last_cloud_refresh.txt
+
 storage/
 backups/
+
+# =========================================================
+# Generated documentation artifacts
+# =========================================================
+
+docs/*.xlsx
+
 ```

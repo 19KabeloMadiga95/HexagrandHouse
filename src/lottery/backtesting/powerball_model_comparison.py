@@ -6,6 +6,13 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
+from src.lottery.config.lottery_game_rules import (
+    get_current_rule,
+    get_regular_range,
+    get_bonus_range,
+    get_max_historical_bonus_number,
+)
+
 
 # =========================================================
 # PROJECT PATHS
@@ -26,8 +33,13 @@ OUTPUT_FILE = EXPORT_DIR / "powerball_model_comparison_backtest.xlsx"
 REGULAR_COLS = ["N1", "N2", "N3", "N4", "N5"]
 BONUS_COL = "Bonus"
 
-REGULAR_RANGE = range(1, 51)
-BONUS_RANGE = range(1, 21)
+POWERBALL_CURRENT_RULE = get_current_rule("PowerBall")
+REGULAR_RANGE = get_regular_range(POWERBALL_CURRENT_RULE)
+BONUS_RANGE = get_bonus_range(POWERBALL_CURRENT_RULE)
+HISTORICAL_BONUS_RANGE = range(
+    POWERBALL_CURRENT_RULE.bonus_min,
+    (get_max_historical_bonus_number("PowerBall") or POWERBALL_CURRENT_RULE.bonus_max) + 1,
+)
 
 TEST_DRAWS = 100
 PREDICTIONS_PER_DRAW = 10
@@ -248,7 +260,7 @@ def build_frequency_scores(train_df):
     )
 
     bonus_scores = pd.Series(
-        {n: bonus_counter[n] for n in BONUS_RANGE}
+        {n: bonus_counter[n] for n in HISTORICAL_BONUS_RANGE}
     )
 
     return normalise_01(reg_scores), normalise_01(bonus_scores)
@@ -263,7 +275,7 @@ def build_recency_scores(train_df, decay=0.985):
 
     bonus_scores = pd.Series(
         0.0,
-        index=pd.Index(BONUS_RANGE),
+        index=pd.Index(HISTORICAL_BONUS_RANGE),
         dtype=float
     )
 
@@ -409,7 +421,7 @@ def generate_random_predictions(prediction_count):
     while len(predictions) < prediction_count:
         regulars = sorted(
             _rng.choice(
-                np.arange(1, 51),
+                np.array(REGULAR_RANGE),
                 size=5,
                 replace=False
             ).tolist()
@@ -417,7 +429,7 @@ def generate_random_predictions(prediction_count):
 
         bonus = int(
             _rng.choice(
-                np.arange(1, 21),
+                np.array(BONUS_RANGE),
                 size=1
             )[0]
         )
@@ -471,7 +483,7 @@ def generate_weighted_predictions(train_df, config, prediction_count):
         if config["Mode"] == "hybrid" and _rng.random() < hybrid_randomness:
             regulars = sorted(
                 _rng.choice(
-                    np.arange(1, 51),
+                    np.array(REGULAR_RANGE),
                     size=5,
                     replace=False
                 ).tolist()
@@ -484,7 +496,7 @@ def generate_weighted_predictions(train_df, config, prediction_count):
             )
 
         if _rng.random() < hybrid_randomness:
-            bonus = int(_rng.choice(np.arange(1, 21), size=1)[0])
+            bonus = int(_rng.choice(np.array(BONUS_RANGE), size=1)[0])
         else:
             bonus = weighted_choice_no_replace(
                 pool=list(BONUS_RANGE),

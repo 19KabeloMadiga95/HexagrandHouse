@@ -15,7 +15,7 @@ from src.football.data_ingestion.build_football_fixtures import (
     export_fixtures,
 )
 
-from src.football.predictions.predict_fixtures import (
+from HexagrandHouse_VSCode.src.football.predict_fixtures import (
     export_fixture_predictions,
 )
 

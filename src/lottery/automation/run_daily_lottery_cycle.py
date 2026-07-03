@@ -97,8 +97,8 @@ from src.lottery.optimization.adaptive_weight_tuner import (
 # ENSEMBLE + SCORING
 # =========================================================
 
-from src.lottery.predictions.ensemble_prediction_engine import (
-    export_all_game_ensembles,
+from src.lottery.optimization.ensemble_prediction_engine import (
+    export_ensemble_predictions,
 )
 
 from src.lottery.scoring.model_performance_dashboard import (
@@ -485,7 +485,7 @@ def run_daily_lottery_cycle():
 
     run_step(
         step_name="Generate Final Ensemble Predictions",
-        function=export_all_game_ensembles,
+        function=export_ensemble_predictions,
         logs=logs,
     )
 

@@ -6,6 +6,13 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from src.lottery.config.lottery_game_rules import (
+    get_current_rule,
+    get_regular_range,
+    get_bonus_range,
+    get_max_historical_bonus_number,
+)
+
 
 # =========================================================
 # PROJECT PATHS
@@ -23,11 +30,16 @@ OUTPUT_FILE = EXPORT_DIR / "powerball_predictions.xlsx"
 # MODEL CONFIG
 # =========================================================
 
-REGULAR_RANGE = range(1, 51)
-BONUS_RANGE = range(1, 21)
+POWERBALL_CURRENT_RULE = get_current_rule("PowerBall")
+REGULAR_RANGE = get_regular_range(POWERBALL_CURRENT_RULE)
+BONUS_RANGE = get_bonus_range(POWERBALL_CURRENT_RULE)
+HISTORICAL_BONUS_RANGE = range(
+    POWERBALL_CURRENT_RULE.bonus_min,
+    (get_max_historical_bonus_number("PowerBall") or POWERBALL_CURRENT_RULE.bonus_max) + 1,
+)
 
 LOW_REGULAR_MAX = 25
-LOW_BONUS_MAX = 10
+LOW_BONUS_MAX = POWERBALL_CURRENT_RULE.bonus_max // 2
 
 SIMULATION_COUNT = 5000
 TOP_PREDICTIONS = 10
@@ -200,7 +212,7 @@ def build_frequency_scores(df):
     )
 
     bonus_scores = pd.Series(
-        {n: bonus_counter[n] for n in BONUS_RANGE}
+        {n: bonus_counter[n] for n in HISTORICAL_BONUS_RANGE}
     )
 
     return normalise_01(regular_scores), normalise_01(bonus_scores)
@@ -215,7 +227,7 @@ def build_recency_scores(df):
 
     bonus_scores = pd.Series(
         0.0,
-        index=pd.Index(BONUS_RANGE),
+        index=pd.Index(HISTORICAL_BONUS_RANGE),
         dtype=float
     )
 

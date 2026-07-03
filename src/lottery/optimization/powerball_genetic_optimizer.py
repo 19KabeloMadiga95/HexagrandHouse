@@ -6,6 +6,13 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from src.lottery.config.lottery_game_rules import (
+    get_current_rule,
+    get_regular_range,
+    get_bonus_range,
+    get_max_historical_bonus_number,
+)
+
 
 # =========================================================
 # PROJECT PATHS
@@ -38,8 +45,13 @@ OUTPUT_FILE = (
 # CONFIG
 # =========================================================
 
-REGULAR_RANGE = range(1, 51)
-BONUS_RANGE = range(1, 21)
+POWERBALL_CURRENT_RULE = get_current_rule("PowerBall")
+REGULAR_RANGE = get_regular_range(POWERBALL_CURRENT_RULE)
+BONUS_RANGE = get_bonus_range(POWERBALL_CURRENT_RULE)
+HISTORICAL_BONUS_RANGE = range(
+    POWERBALL_CURRENT_RULE.bonus_min,
+    (get_max_historical_bonus_number("PowerBall") or POWERBALL_CURRENT_RULE.bonus_max) + 1,
+)
 
 POPULATION_SIZE = 250
 GENERATIONS = 60
@@ -206,14 +218,14 @@ def build_history_sets(df):
 def random_genome():
     regulars = sorted(
         _rng.choice(
-            np.arange(1, 51),
+            np.array(REGULAR_RANGE),
             size=5,
             replace=False
         ).tolist()
     )
 
     bonus_pool = [
-        n for n in range(1, 21)
+        n for n in BONUS_RANGE
         if n not in regulars
     ]
 
@@ -486,7 +498,7 @@ def run_powerball_genetic_optimizer():
     generation_rows = []
 
     print("\n======================================")
-    print("GENETIC POWERBALL NUMBER OPTIMIZER")
+    print("GENETIC POWERBALL NUMBER OPTIMIZER V3")
     print("======================================")
     print(f"Population Size : {POPULATION_SIZE}")
     print(f"Generations     : {GENERATIONS}")
