@@ -144,4 +144,12 @@ backups/
 
 docs/*.xlsx
 
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Cloud-ready SQLite warehouse
+!data/hexagrandhouse.db
+
 ```
