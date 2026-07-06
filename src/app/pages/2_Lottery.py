@@ -8,67 +8,82 @@ import pandas as pd
 import streamlit as st
 
 from src.app.utils.page import configure_page, refresh_chip
-from src.app.components.premium import compact_header, kpi_grid, section_title, lottery_ticket, dataframe_card, empty_state, compact_lottery_table
-from src.services.lottery_service import get_lottery_dashboard_data, filter_by_game, get_latest_results, get_result_coverage_summary
+from src.app.utils.sqlite_runtime import cached_table, sort_by_date, unique_options, filter_value, count_rows, latest_label
+from src.app.components.website import hero, mini_cards, section_label, lottery_ticket, result_row, empty_message, friendly_table, page_footer
 
-configure_page("Lottery Intelligence", "🎲")
-
-@st.cache_data(ttl=300)
-def load_data():
-    return get_lottery_dashboard_data(limit=300)
-
-d = load_data()
-results_df = d.get("results_df", pd.DataFrame())
-predictions_df = d.get("predictions_df", pd.DataFrame())
-game_options = d.get("game_options", ["All"])
-display_columns = d.get("display_columns", {})
-k = d.get("kpis", {})
-latest_draw = k.get("latest_draw", "-")
+configure_page("Lottery Picks", "🎲")
 refresh_chip()
 
-compact_header(
-    "Lottery Intelligence",
-    "Rules-aware tickets. Dense view.",
-    "Curated predictions, recent draws and coverage without wasting screen space.",
-    tags=[f"Latest: {latest_draw}", "Current rules active"],
+
+def clean_predictions(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    if "N1" in out.columns:
+        out = out[pd.to_numeric(out["N1"], errors="coerce").notna()]
+    if "GeneratedAt" in out.columns:
+        out["_generated"] = pd.to_datetime(out["GeneratedAt"], errors="coerce")
+    elif "EnsembleGeneratedAt" in out.columns:
+        out["_generated"] = pd.to_datetime(out["EnsembleGeneratedAt"], errors="coerce")
+    else:
+        out["_generated"] = pd.NaT
+    out["_rank"] = pd.to_numeric(out.get("PredictionRank", 999), errors="coerce")
+    out["_score"] = pd.to_numeric(out.get("ConfidenceScore", out.get("RawScore", 0)), errors="coerce")
+    return out.sort_values(["_generated", "_rank", "_score"], ascending=[False, True, False], na_position="last")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_lottery():
+    predictions = clean_predictions(cached_table("lottery_predictions", limit=500))
+    results = sort_by_date(cached_table("lottery_history", limit=500))
+    return predictions, results
+
+predictions, results = load_lottery()
+games = unique_options(predictions if not predictions.empty else results, "GameName")
+selected_game = st.selectbox("Choose a game", games, index=0)
+
+view_predictions = filter_value(predictions, "GameName", selected_game)
+view_results = filter_value(results, "GameName", selected_game)
+
+hero(
+    "Lottery picks.",
+    "Numbers are shown like tickets, with recent draws beside them. Choose a game and review the latest selections.",
+    eyebrow="Lottery",
+    chips=[latest_label(results, "DrawDate", "GameName"), "Current rules", "Entertainment only"],
     metrics=[
-        {"label": "Games", "value": k.get("game_count", len(game_options)), "note": "tracked"},
-        {"label": "Results", "value": k.get("result_count", len(results_df)), "note": "history"},
-        {"label": "Predictions", "value": k.get("prediction_count", len(predictions_df)), "note": "curated"},
-        {"label": "Status", "value": "Ready", "note": "rules-aware"},
+        {"value": len(games) - 1 if games and games[0] == "All" else len(games), "label": "Games"},
+        {"value": f"{len(view_predictions):,}", "label": "Picks"},
+        {"value": f"{len(view_results):,}", "label": "Results"},
+        {"value": "Ready", "label": "Status"},
     ],
 )
 
-selected_game = st.selectbox("Select game", game_options, index=0)
-fp = filter_by_game(predictions_df, selected_game)
-fr = filter_by_game(results_df, selected_game)
-latest = get_latest_results(fr, limit=12)
-coverage = get_result_coverage_summary(fr)
-
-kpi_grid([
-    {"title": "View", "value": selected_game, "sub": "selected game", "icon": "◆"},
-    {"title": "Predictions", "value": len(fp), "sub": "generated selections", "icon": "◎"},
-    {"title": "Results", "value": len(fr), "sub": "historical rows", "icon": "▤"},
-    {"title": "Latest draw", "value": latest.iloc[0].get("DrawDate", "-") if not latest.empty else "-", "sub": "newest result", "icon": "◴"},
+mini_cards([
+    {"icon": "🎟️", "label": "View", "value": selected_game, "note": "selected game"},
+    {"icon": "🎲", "label": "Tickets", "value": f"{len(view_predictions):,}", "note": "available now"},
+    {"icon": "📌", "label": "Latest", "value": latest_label(view_results, "DrawDate", "GameName"), "note": "newest draw"},
+    {"icon": "🧾", "label": "History", "value": f"{count_rows('lottery_history'):,}", "note": "stored results"},
 ])
 
-left, right = st.columns([1.05, .95], gap="medium")
-with left:
-    section_title("Featured tickets", "🎯")
-    if fp.empty:
-        empty_state("No predictions", "No prediction data is available for the selected game.")
-    else:
-        for i, (_, row) in enumerate(fp.head(10).iterrows(), 1):
-            lottery_ticket(row, i)
-with right:
-    section_title("Latest results", "📌")
-    compact_lottery_table(latest, kind="results", limit=12)
-    section_title("Coverage", "▦")
-    dataframe_card(coverage, height=170, limit=12, empty_title="No coverage summary")
+left, right = st.columns([1, 1], gap="medium")
 
-with st.expander("Open prediction and result tables", expanded=False):
-    tab1, tab2 = st.tabs(["Prediction table", "Result table"])
-    with tab1:
-        compact_lottery_table(fp, kind="predictions", limit=150)
-    with tab2:
-        compact_lottery_table(fr, kind="results", limit=150)
+with left:
+    section_label("Featured tickets", "First ten tickets for this view.")
+    if view_predictions.empty:
+        empty_message("No tickets available", "Try another game or wait for the next refresh.")
+    else:
+        for i, (_, row) in enumerate(view_predictions.head(10).iterrows(), 1):
+            lottery_ticket(row, i)
+
+with right:
+    section_label("Latest results", "Recent draws for the selected game.")
+    if view_results.empty:
+        empty_message("No result history", "Results are not available for this game yet.")
+    else:
+        for _, row in view_results.head(8).iterrows():
+            result_row(row)
+
+with st.expander("Show results table", expanded=False):
+    friendly_table(view_results, ["DrawDate", "GameName", "DrawType", "N1", "N2", "N3", "N4", "N5", "N6", "Bonus"], height=300, limit=100)
+
+page_footer()

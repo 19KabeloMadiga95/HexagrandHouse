@@ -4,80 +4,84 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import pandas as pd
 import streamlit as st
 
 from src.app.utils.page import configure_page, refresh_chip
-from src.app.components.premium import compact_header, kpi_grid, section_title, football_card, dataframe_card, empty_state, compact_football_table
-from src.services.football_service import get_football_dashboard_data, filter_by_league, filter_elite_only
+from src.app.utils.sqlite_runtime import (
+    cached_table, sort_by_strength, unique_options, filter_value,
+    count_rows,
+)
+from src.app.components.website import (
+    hero, mini_cards, section_label, football_pick, empty_message,
+    friendly_table, page_footer,
+)
 
-configure_page("Football Intelligence", "⚽")
-
-@st.cache_data(ttl=300)
-def load_data():
-    return get_football_dashboard_data(limit=500)
-
-d = load_data()
-k = d.get("kpis", {})
+configure_page("Football Picks", "⚽")
 refresh_chip()
-compact_header(
-    "Football Intelligence",
-    "Elite signals. Compact workspace.",
-    "Top plays, value opportunities, coverage and source status in one dense view.",
-    tags=[f"{k.get('leagues',0)} tracked competitions", "Source-aware fixtures"],
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_football():
+    top = sort_by_strength(cached_table("football_top_plays", limit=500))
+    value = sort_by_strength(cached_table("football_value_bets", limit=1000))
+    predictions = sort_by_strength(cached_table("football_predictions", limit=5000))
+    if top.empty:
+        top = predictions
+    return top, value, predictions
+
+top, value, predictions = load_football()
+league_source = top if not top.empty else predictions
+leagues = unique_options(league_source, "League")
+selected_league = st.selectbox("Choose a league", leagues, index=0)
+
+view_top = filter_value(top, "League", selected_league)
+view_value = filter_value(value, "League", selected_league)
+view_predictions = filter_value(predictions, "League", selected_league)
+
+hero(
+    "Football picks.",
+    "A simple match list for reviewing suggested football picks. Start with the cards, then open the table only when you need more detail.",
+    eyebrow="Football",
+    chips=["Top matches", "Value view", "Simple cards"],
     metrics=[
-        {"label": "Fixtures", "value": k.get("fixtures", 0), "note": "upcoming"},
-        {"label": "Predictions", "value": k.get("predictions", 0), "note": "modelled"},
-        {"label": "Leagues", "value": k.get("leagues", 0), "note": "tracked"},
-        {"label": "Confidence", "value": k.get("average_confidence", "-"), "note": "avg"},
+        {"value": f"{len(view_top):,}", "label": "Top picks"},
+        {"value": f"{len(view_value):,}", "label": "Value picks"},
+        {"value": f"{max(len(leagues)-1, 0):,}", "label": "Leagues"},
+        {"value": f"{count_rows('football_history'):,}", "label": "Past matches"},
     ],
 )
 
-f1, f2 = st.columns(2)
-with f1:
-    league = st.selectbox("League", d.get("league_options", ["All"]))
-with f2:
-    confidence = st.selectbox("Confidence", ["All", "Elite Only"], index=0)
-
-fixtures = filter_by_league(d.get("fixtures_df", pd.DataFrame()), league)
-predictions = filter_by_league(d.get("predictions_df", pd.DataFrame()), league)
-top = filter_by_league(d.get("top_predictions_df", pd.DataFrame()), league)
-value = filter_by_league(d.get("value_bets_df", pd.DataFrame()), league)
-summary = filter_by_league(d.get("league_summary_df", pd.DataFrame()), league)
-if confidence == "Elite Only":
-    predictions = filter_elite_only(predictions)
-    top = filter_elite_only(top)
-    value = filter_elite_only(value)
-
-kpi_grid([
-    {"title": "Fixtures", "value": len(fixtures), "sub": "selected view", "icon": "◴"},
-    {"title": "Predictions", "value": len(predictions), "sub": "filtered rows", "icon": "◎"},
-    {"title": "Top plays", "value": len(top), "sub": "shortlist", "icon": "★"},
-    {"title": "Value bets", "value": len(value), "sub": "market edges", "icon": "◆"},
+mini_cards([
+    {"icon": "⚽", "label": "Current view", "value": selected_league, "note": "selected league"},
+    {"icon": "🔥", "label": "Top picks", "value": f"{len(view_top):,}", "note": "shortlist"},
+    {"icon": "💎", "label": "Value picks", "value": f"{len(view_value):,}", "note": "extra review"},
+    {"icon": "📋", "label": "Past matches", "value": f"{count_rows('football_history'):,}", "note": "loaded results"},
 ])
 
-left, right = st.columns([1.05, .95], gap="medium")
-with left:
-    section_title("Match tickets", "🔥")
-    card_df = top if not top.empty else predictions
-    if card_df.empty:
-        empty_state("No prediction cards", "No football prediction cards are available yet.")
-    else:
-        for i, (_, row) in enumerate(card_df.head(5).iterrows(), 1):
-            football_card(row, i)
-with right:
-    section_title("Fixture source", "📅")
-    if fixtures.empty:
-        empty_state("No upcoming fixtures", "The current public source has no future fixtures. Archive predictions remain available.", "📡")
-    else:
-        cols = [c for c in d.get("display_columns", {}).get("fixtures", []) if c in fixtures.columns]
-        dataframe_card(fixtures[cols] if cols else fixtures, height=220, limit=20)
-    section_title("League coverage", "🌍")
-    dataframe_card(summary, height=260, limit=25, empty_title="No league coverage")
+left, right = st.columns([1.05, .95], gap="large")
 
-with st.expander("Open value and prediction tables", expanded=False):
-    tab1, tab2 = st.tabs(["Value opportunities", "Prediction table"])
-    with tab1:
-        compact_football_table(value, limit=120)
-    with tab2:
-        compact_football_table(predictions, limit=150)
+with left:
+    section_label("Match cards", "Review the strongest available football picks.")
+    card_df = view_top if not view_top.empty else view_predictions
+    if card_df.empty:
+        empty_message("No match picks yet", "Football picks will populate when data is available.")
+    else:
+        for i, (_, row) in enumerate(card_df.head(8).iterrows(), 1):
+            football_pick(row, i)
+
+with right:
+    section_label("Value picks", "A second view for matches that may be worth comparing.")
+    if view_value.empty:
+        empty_message("No value picks", "This area will populate when value data is available.")
+    else:
+        for i, (_, row) in enumerate(view_value.head(5).iterrows(), 1):
+            football_pick(row, i)
+
+with st.expander("Show simple football table", expanded=False):
+    friendly_table(
+        view_predictions if not view_predictions.empty else view_top,
+        ["MatchDate", "League", "HomeTeam", "AwayTeam", "PrimaryMarketSignal", "ConfidenceScore", "ConfidenceLabel"],
+        height=420,
+        limit=120,
+    )
+
+page_footer()
