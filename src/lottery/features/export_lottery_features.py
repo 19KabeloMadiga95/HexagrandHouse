@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 
 from src.lottery.features.base_lottery_features import export_base_features
@@ -8,17 +10,19 @@ from src.lottery.features.uk49s_features import export_uk49s_features
 
 
 # =========================================================
-# EXPORT ALL LOTTERY FEATURES
+# EXPORT ALL LOTTERY FEATURES TO SQLITE
 # =========================================================
 
-def export_all_lottery_features():
+
+def export_all_lottery_features() -> list[dict]:
     print("\n======================================")
-    print("HEXAGRANDHOUSE LOTTERY FEATURE EXPORT")
+    print("HEXAGRANDHOUSE LOTTERY FEATURE BUILD")
+    print("SQLite-first runtime mode")
     print("======================================")
     print(f"Run time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("======================================\n")
 
-    results = []
+    results: list[dict] = []
 
     steps = [
         ("Base Features", export_base_features),
@@ -30,38 +34,38 @@ def export_all_lottery_features():
 
     for name, runner in steps:
         print("\n--------------------------------------")
-        print(f"EXPORTING: {name}")
+        print(f"BUILDING: {name}")
         print("--------------------------------------")
 
         try:
             features = runner()
-
-            results.append({
-                "FeatureSet": name,
-                "Rows": len(features),
-                "Status": "Success",
-                "Error": "",
-            })
-
-        except Exception as e:
-            print(f"❌ {name} failed: {e}")
-
-            results.append({
-                "FeatureSet": name,
-                "Rows": 0,
-                "Status": "Failed",
-                "Error": str(e),
-            })
+            results.append(
+                {
+                    "FeatureSet": name,
+                    "Rows": len(features),
+                    "Status": "Success",
+                    "Error": "",
+                }
+            )
+        except Exception as exc:
+            print(f"FAILED: {name}: {exc}")
+            results.append(
+                {
+                    "FeatureSet": name,
+                    "Rows": 0,
+                    "Status": "Failed",
+                    "Error": str(exc),
+                }
+            )
 
     print("\n======================================")
-    print("FEATURE EXPORT COMPLETE")
+    print("LOTTERY FEATURE BUILD COMPLETE")
     print("======================================")
 
     total_rows = 0
 
     for result in results:
-        total_rows += result["Rows"]
-
+        total_rows += int(result["Rows"])
         print(
             f"{result['FeatureSet']:<22} | "
             f"Rows: {result['Rows']:<6} | "
@@ -78,11 +82,7 @@ def export_all_lottery_features():
     return results
 
 
-# =========================================================
-# CLI
-# =========================================================
-
-def main():
+def main() -> None:
     export_all_lottery_features()
 
 

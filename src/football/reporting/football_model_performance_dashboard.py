@@ -1,430 +1,335 @@
-from pathlib import Path
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 
+from src.data.sqlite_store import create_indexes, read_sqlite_table, replace_sqlite_table
+
 
 # =========================================================
-# PROJECT PATHS
+# SQLITE FOOTBALL PERFORMANCE REPORTING
 # =========================================================
 
-BASE_DIR = Path(__file__).resolve().parents[3]
+SOURCE_TABLE = "football_ensemble_predictions"
+BACKTEST_TABLE = "football_backtest_history"
+DASHBOARD_TABLE = "football_performance_dashboard_summary"
+KPI_TABLE = "football_performance_kpis"
+LEAGUE_TABLE = "football_league_performance"
+MARKET_TABLE = "football_market_performance"
+GRADE_TABLE = "football_grade_summary"
+STATUS_TABLE = "football_file_status"
+NOTES_TABLE = "football_performance_notes"
 
-MODELS_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "models"
-)
-
-PREDICTIONS_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "predictions"
-)
-
-REPORTING_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "reporting"
-)
-
-GOALS_MODEL_FILE = (
-    MODELS_DIR
-    / "football_goals_model_predictions.xlsx"
-)
-
-CORNERS_MODEL_FILE = (
-    MODELS_DIR
-    / "football_corners_model_predictions.xlsx"
-)
-
-RESULT_MODEL_FILE = (
-    MODELS_DIR
-    / "football_result_model_predictions.xlsx"
-)
-
-ENSEMBLE_FILE = (
-    PREDICTIONS_DIR
-    / "football_ensemble_predictions.xlsx"
-)
-
-FIXTURE_PREDICTIONS_FILE = (
-    PREDICTIONS_DIR
-    / "football_fixture_predictions.xlsx"
-)
-
-OUTPUT_FILE = (
-    REPORTING_DIR
-    / "football_model_performance_dashboard.xlsx"
-)
+MODEL_TABLES = [
+    "football_match_features",
+    "football_result_model_predictions",
+    "football_goals_model_predictions",
+    "football_corners_model_predictions",
+    "football_ensemble_predictions",
+    "football_predictions",
+]
 
 
 # =========================================================
 # HELPERS
 # =========================================================
 
-def ensure_directories():
-    REPORTING_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+def now_string() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def safe_read_excel(
-    path,
-    sheet_name
-):
+def safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        if not path.exists():
-            print(f"Missing file: {path}")
-            return pd.DataFrame()
+        if pd.isna(value):
+            return default
+        return float(value)
+    except Exception:
+        return default
 
-        return pd.read_excel(
-            path,
-            sheet_name=sheet_name,
-            engine="openpyxl"
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if pd.isna(value):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def percentage(value: Any) -> float:
+    return round(safe_float(value, 0.0) * 100, 2)
+
+
+def _first_existing(df: pd.DataFrame, candidates: list[str], default: Any = None) -> pd.Series:
+    for col in candidates:
+        if col in df.columns:
+            return df[col]
+    return pd.Series([default] * len(df), index=df.index)
+
+
+def _clean_predictions(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+
+    out = df.copy()
+
+    if "MatchDate" in out.columns:
+        out["MatchDate"] = pd.to_datetime(out["MatchDate"], errors="coerce")
+
+    if "GeneratedAt" in out.columns:
+        out["GeneratedAt"] = pd.to_datetime(out["GeneratedAt"], errors="coerce")
+
+    for col in [
+        "ModelProbability",
+        "ConfidenceScore",
+        "EnsembleConfidenceScore",
+        "ValueScore",
+        "PredictionHit",
+        "ElitePrediction",
+        "HomeGoals",
+        "AwayGoals",
+        "TotalGoals",
+        "HomeCorners",
+        "AwayCorners",
+        "TotalCorners",
+    ]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    if "ConfidenceScore" not in out.columns:
+        out["ConfidenceScore"] = _first_existing(
+            out,
+            ["EnsembleConfidenceScore", "ModelProbability"],
+            0,
         )
 
-    except Exception as e:
-        print(f"Could not read: {path}")
-        print(f"Sheet: {sheet_name}")
-        print(f"Error: {e}")
+    if "EnsembleConfidenceScore" not in out.columns:
+        out["EnsembleConfidenceScore"] = _first_existing(
+            out,
+            ["ConfidenceScore", "ModelProbability"],
+            0,
+        )
 
-        return pd.DataFrame()
+    if "PredictionHit" in out.columns:
+        out["PredictionHit"] = pd.to_numeric(out["PredictionHit"], errors="coerce")
+
+    return out
 
 
-def file_metadata(path):
-    exists = path.exists()
+def load_predictions() -> pd.DataFrame:
+    return _clean_predictions(read_sqlite_table(SOURCE_TABLE))
+
+
+def _hit_rate(df: pd.DataFrame) -> float | None:
+    if df.empty or "PredictionHit" not in df.columns:
+        return None
+
+    hit = pd.to_numeric(df["PredictionHit"], errors="coerce")
+    hit = hit[hit.notna()]
+
+    if hit.empty:
+        return None
+
+    return round(float(hit.mean()), 4)
+
+
+def _latest_date(df: pd.DataFrame, column: str) -> str:
+    if df.empty or column not in df.columns:
+        return ""
+
+    value = pd.to_datetime(df[column], errors="coerce").max()
+    if pd.isna(value):
+        return ""
+
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _top_value_counts(df: pd.DataFrame, column: str, limit: int = 1) -> str:
+    if df.empty or column not in df.columns:
+        return ""
+
+    counts = df[column].dropna().astype(str).value_counts().head(limit)
+    if counts.empty:
+        return ""
+
+    return ", ".join([f"{idx} ({val})" for idx, val in counts.items()])
+
+
+def _table_status(table_name: str) -> dict[str, Any]:
+    df = read_sqlite_table(table_name)
+    latest_generated = _latest_date(df, "GeneratedAt")
+    latest_match = _latest_date(df, "MatchDate")
 
     return {
-        "Exists": exists,
-        "LastModified": (
-            datetime.fromtimestamp(
-                path.stat().st_mtime
-            ).strftime("%Y-%m-%d %H:%M:%S")
-            if exists
-            else None
-        ),
-        "SizeMB": (
-            round(
-                path.stat().st_size / (1024 * 1024),
-                2
-            )
-            if exists
-            else 0
-        ),
+        "TableName": table_name,
+        "RowCount": int(len(df)),
+        "LatestGeneratedAt": latest_generated,
+        "LatestMatchDate": latest_match,
+        "Status": "Available" if not df.empty else "Empty/Missing",
+        "CheckedAt": now_string(),
     }
 
 
-def get_summary_value(
-    summary_df,
-    metric_name,
-    default=0
-):
-    if summary_df.empty:
-        return default
+# =========================================================
+# BUILDERS
+# =========================================================
 
-    if "Metric" not in summary_df.columns or "Value" not in summary_df.columns:
-        return default
+def build_backtest_history(predictions: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_predictions() if predictions is None else _clean_predictions(predictions)
 
-    match = summary_df[
-        summary_df["Metric"].astype(str) == str(metric_name)
+    columns = [
+        "MatchKey",
+        "MatchDate",
+        "Season",
+        "LeagueCode",
+        "League",
+        "Country",
+        "Tier",
+        "HomeTeam",
+        "AwayTeam",
+        "Market",
+        "PrimaryMarketSignal",
+        "PredictedResult",
+        "ModelProbability",
+        "ConfidenceScore",
+        "EnsembleConfidenceScore",
+        "ConfidenceLabel",
+        "ValueScore",
+        "ValueRating",
+        "PredictionHit",
+        "HomeGoals",
+        "AwayGoals",
+        "TotalGoals",
+        "HomeCorners",
+        "AwayCorners",
+        "TotalCorners",
+        "GeneratedAt",
     ]
 
-    if match.empty:
-        return default
+    if df.empty:
+        return pd.DataFrame(columns=columns + ["BacktestStatus", "EvaluatedAt"])
 
-    return match.iloc[0]["Value"]
+    out = df[[col for col in columns if col in df.columns]].copy()
 
+    if "PredictionHit" in out.columns:
+        out = out[pd.to_numeric(out["PredictionHit"], errors="coerce").notna()].copy()
 
-def get_first_numeric(
-    df,
-    col,
-    default=0
-):
-    if df.empty or col not in df.columns:
-        return default
+    out["BacktestStatus"] = "Evaluated"
+    out["EvaluatedAt"] = now_string()
 
-    value = pd.to_numeric(
-        df[col],
-        errors="coerce"
-    ).dropna()
+    if "MatchDate" in out.columns:
+        out = out.sort_values("MatchDate", ascending=False)
 
-    if value.empty:
-        return default
-
-    return round(
-        value.mean(),
-        3
-    )
+    return out.reset_index(drop=True)
 
 
-def get_rows_scored_from_summary(summary_df):
-    if summary_df.empty:
-        return 0
+def build_dashboard_summary(predictions: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_predictions() if predictions is None else _clean_predictions(predictions)
+    evaluated = build_backtest_history(df)
+    generated = now_string()
 
-    if "RowsScored" in summary_df.columns:
-        rows = pd.to_numeric(
-            summary_df["RowsScored"],
-            errors="coerce"
-        ).dropna()
+    hit_rate = _hit_rate(evaluated)
+    avg_conf = round(float(pd.to_numeric(df.get("EnsembleConfidenceScore", pd.Series(dtype=float)), errors="coerce").mean()), 4) if not df.empty else 0
+    elite_count = int(pd.to_numeric(df.get("ElitePrediction", pd.Series(dtype=float)), errors="coerce").fillna(0).sum()) if not df.empty else 0
 
-        if not rows.empty:
-            return int(rows.max())
-
-    return 0
-
-
-# =========================================================
-# DASHBOARD SUMMARY
-# =========================================================
-
-def build_dashboard_summary(
-    goals_summary,
-    corners_summary,
-    result_summary,
-    ensemble_summary,
-    fixture_summary
-):
-    rows = []
-
-    if not goals_summary.empty:
-        for _, row in goals_summary.iterrows():
-            rows.append({
-                "Section": "Historical Model",
-                "ModelArea": "Goals",
-                "Metric": row.get("Model", ""),
-                "RowsScored": row.get("RowsScored", None),
-                "AverageProbability": row.get("AverageProbability", None),
-                "ActualHitRate": row.get("ActualHitRate", None),
-                "PredictionAccuracy": row.get("PredictionAccuracy", None),
-            })
-
-    if not corners_summary.empty:
-        for _, row in corners_summary.iterrows():
-            rows.append({
-                "Section": "Historical Model",
-                "ModelArea": "Corners",
-                "Metric": row.get("Model", ""),
-                "RowsScored": row.get("RowsScored", None),
-                "AverageProbability": row.get("AverageProbability", None),
-                "ActualHitRate": row.get("ActualHitRate", None),
-                "PredictionAccuracy": row.get("PredictionAccuracy", None),
-            })
-
-    if not result_summary.empty:
-        for _, row in result_summary.iterrows():
-            rows.append({
-                "Section": "Historical Model",
-                "ModelArea": "Result",
-                "Metric": row.get("Model", "Three-Way Result Model"),
-                "RowsScored": row.get("RowsScored", None),
-                "AverageProbability": row.get("AverageHomeWinProbability", None),
-                "ActualHitRate": None,
-                "PredictionAccuracy": row.get("PredictionAccuracy", None),
-            })
-
-    if not ensemble_summary.empty:
-        for _, row in ensemble_summary.iterrows():
-            rows.append({
-                "Section": "Historical Ensemble",
-                "ModelArea": "Ensemble",
-                "Metric": row.get("Metric", None),
-                "RowsScored": row.get("Value", None),
-                "AverageProbability": None,
-                "ActualHitRate": None,
-                "PredictionAccuracy": None,
-            })
-
-    if not fixture_summary.empty:
-        for _, row in fixture_summary.iterrows():
-            rows.append({
-                "Section": "Future Fixtures",
-                "ModelArea": "Fixture Prediction",
-                "Metric": row.get("Metric", None),
-                "RowsScored": row.get("Value", None),
-                "AverageProbability": None,
-                "ActualHitRate": None,
-                "PredictionAccuracy": None,
-            })
-
-    return pd.DataFrame(rows)
-
-
-def build_high_level_kpis(
-    goals_summary,
-    corners_summary,
-    result_summary,
-    ensemble_summary,
-    fixture_summary
-):
     rows = [
-        {
-            "KPI": "Goals Prediction Rows",
-            "Value": get_rows_scored_from_summary(
-                goals_summary
-            ),
-        },
-        {
-            "KPI": "Corners Prediction Rows",
-            "Value": get_rows_scored_from_summary(
-                corners_summary
-            ),
-        },
-        {
-            "KPI": "Result Prediction Rows",
-            "Value": get_rows_scored_from_summary(
-                result_summary
-            ),
-        },
-        {
-            "KPI": "Historical Ensemble Rows",
-            "Value": get_summary_value(
-                ensemble_summary,
-                "Rows",
-                0
-            ),
-        },
-        {
-            "KPI": "Future Fixture Prediction Rows",
-            "Value": get_summary_value(
-                fixture_summary,
-                "Fixtures Predicted",
-                0
-            ),
-        },
-        {
-            "KPI": "Historical Elite Predictions",
-            "Value": get_summary_value(
-                ensemble_summary,
-                "Elite Predictions",
-                0
-            ),
-        },
-        {
-            "KPI": "Future Elite Predictions",
-            "Value": get_summary_value(
-                fixture_summary,
-                "Elite Predictions",
-                0
-            ),
-        },
-        {
-            "KPI": "Average Historical Ensemble Confidence",
-            "Value": get_summary_value(
-                ensemble_summary,
-                "Average Ensemble Confidence",
-                0
-            ),
-        },
-        {
-            "KPI": "Average Future Fixture Confidence",
-            "Value": get_summary_value(
-                fixture_summary,
-                "Average Ensemble Confidence",
-                0
-            ),
-        },
-        {
-            "KPI": "Generated At",
-            "Value": datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-        },
+        {"Metric": "TotalSignals", "Value": int(len(df)), "DisplayValue": f"{len(df):,}", "Detail": "Rows in football_ensemble_predictions", "UpdatedAt": generated},
+        {"Metric": "EvaluatedSignals", "Value": int(len(evaluated)), "DisplayValue": f"{len(evaluated):,}", "Detail": "Rows with a known PredictionHit", "UpdatedAt": generated},
+        {"Metric": "HistoricalHitRate", "Value": hit_rate, "DisplayValue": "-" if hit_rate is None else f"{percentage(hit_rate)}%", "Detail": "Average hit rate across evaluated rows", "UpdatedAt": generated},
+        {"Metric": "AverageConfidence", "Value": avg_conf, "DisplayValue": f"{percentage(avg_conf)}%", "Detail": "Mean ensemble confidence", "UpdatedAt": generated},
+        {"Metric": "EliteSignals", "Value": elite_count, "DisplayValue": f"{elite_count:,}", "Detail": "Rows flagged as ElitePrediction", "UpdatedAt": generated},
+        {"Metric": "LeaguesCovered", "Value": int(df["League"].nunique()) if "League" in df.columns and not df.empty else 0, "DisplayValue": str(int(df["League"].nunique())) if "League" in df.columns and not df.empty else "0", "Detail": "Distinct leagues", "UpdatedAt": generated},
+        {"Metric": "TopMarket", "Value": None, "DisplayValue": _top_value_counts(df, "Market"), "Detail": "Most common market signal", "UpdatedAt": generated},
+        {"Metric": "LatestMatchDate", "Value": None, "DisplayValue": _latest_date(df, "MatchDate"), "Detail": "Newest match date in signals", "UpdatedAt": generated},
+        {"Metric": "LatestGeneratedAt", "Value": None, "DisplayValue": _latest_date(df, "GeneratedAt"), "Detail": "Newest model generation timestamp", "UpdatedAt": generated},
     ]
 
     return pd.DataFrame(rows)
 
 
-def build_model_file_status():
-    files = [
-        {
-            "FileType": "Goals Model",
-            "Path": GOALS_MODEL_FILE,
-        },
-        {
-            "FileType": "Corners Model",
-            "Path": CORNERS_MODEL_FILE,
-        },
-        {
-            "FileType": "Result Model",
-            "Path": RESULT_MODEL_FILE,
-        },
-        {
-            "FileType": "Historical Ensemble",
-            "Path": ENSEMBLE_FILE,
-        },
-        {
-            "FileType": "Fixture Predictions",
-            "Path": FIXTURE_PREDICTIONS_FILE,
-        },
-    ]
+def build_kpis(predictions: pd.DataFrame | None = None) -> pd.DataFrame:
+    summary = build_dashboard_summary(predictions)
+    if summary.empty:
+        return pd.DataFrame(columns=["KPI", "Value", "DisplayValue", "UpdatedAt"])
 
-    rows = []
-
-    for item in files:
-        metadata = file_metadata(
-            item["Path"]
-        )
-
-        rows.append({
-            "FileType": item["FileType"],
-            "Exists": metadata["Exists"],
-            "Path": str(item["Path"]),
-            "LastModified": metadata["LastModified"],
-            "SizeMB": metadata["SizeMB"],
-        })
-
-    return pd.DataFrame(rows)
+    return summary.rename(columns={"Metric": "KPI"})[["KPI", "Value", "DisplayValue", "UpdatedAt"]].copy()
 
 
-def combine_league_summaries(
-    goals_league,
-    corners_league,
-    result_league,
-    ensemble_league,
-    fixture_league
-):
-    frames = []
-
-    if not goals_league.empty:
-        df = goals_league.copy()
-        df["ModelArea"] = "Goals"
-        frames.append(df)
-
-    if not corners_league.empty:
-        df = corners_league.copy()
-        df["ModelArea"] = "Corners"
-        frames.append(df)
-
-    if not result_league.empty:
-        df = result_league.copy()
-        df["ModelArea"] = "Result"
-        frames.append(df)
-
-    if not ensemble_league.empty:
-        df = ensemble_league.copy()
-        df["ModelArea"] = "Historical Ensemble"
-        frames.append(df)
-
-    if not fixture_league.empty:
-        df = fixture_league.copy()
-        df["ModelArea"] = "Fixture Predictions"
-        frames.append(df)
-
-    if not frames:
+def _group_performance(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    if df.empty or group_col not in df.columns:
         return pd.DataFrame()
 
-    return pd.concat(
-        frames,
-        ignore_index=True,
-        sort=False
+    records: list[dict[str, Any]] = []
+
+    for key, grp in df.groupby(group_col, dropna=False):
+        hit_rate = _hit_rate(grp)
+        avg_conf = round(float(pd.to_numeric(grp.get("EnsembleConfidenceScore", pd.Series(dtype=float)), errors="coerce").mean()), 4)
+        elite_count = int(pd.to_numeric(grp.get("ElitePrediction", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+
+        records.append(
+            {
+                group_col: key,
+                "SignalCount": int(len(grp)),
+                "EvaluatedCount": int(pd.to_numeric(grp.get("PredictionHit", pd.Series(dtype=float)), errors="coerce").notna().sum()) if "PredictionHit" in grp.columns else 0,
+                "HitRate": hit_rate,
+                "HitRatePct": None if hit_rate is None else percentage(hit_rate),
+                "AverageConfidence": avg_conf,
+                "AverageConfidencePct": percentage(avg_conf),
+                "EliteSignals": elite_count,
+                "TopMarket": _top_value_counts(grp, "Market"),
+                "LatestMatchDate": _latest_date(grp, "MatchDate"),
+                "UpdatedAt": now_string(),
+            }
+        )
+
+    out = pd.DataFrame(records)
+    if not out.empty:
+        out = out.sort_values(["SignalCount", "AverageConfidence"], ascending=[False, False])
+
+    return out.reset_index(drop=True)
+
+
+def build_league_performance(predictions: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_predictions() if predictions is None else _clean_predictions(predictions)
+    return _group_performance(df, "League")
+
+
+def build_market_performance(predictions: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_predictions() if predictions is None else _clean_predictions(predictions)
+    return _group_performance(df, "Market")
+
+
+def build_grade_summary(predictions: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_predictions() if predictions is None else _clean_predictions(predictions)
+    group_col = "ConfidenceLabel" if "ConfidenceLabel" in df.columns else "ValueRating"
+    return _group_performance(df, group_col)
+
+
+def build_file_status() -> pd.DataFrame:
+    return pd.DataFrame([_table_status(table_name) for table_name in MODEL_TABLES])
+
+
+def build_notes() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "NoteType": "Architecture",
+                "Note": "Football performance reporting reads and writes SQLite tables only.",
+                "UpdatedAt": now_string(),
+            },
+            {
+                "NoteType": "Backtest",
+                "Note": "football_backtest_history is generated from evaluated rows in football_ensemble_predictions.",
+                "UpdatedAt": now_string(),
+            },
+            {
+                "NoteType": "Runtime",
+                "Note": "Excel files are no longer required for the football reporting runtime layer.",
+                "UpdatedAt": now_string(),
+            },
+        ]
     )
 
 
@@ -432,129 +337,44 @@ def combine_league_summaries(
 # EXPORT
 # =========================================================
 
-def export_football_model_performance_dashboard():
-    ensure_directories()
+def export_football_model_performance_dashboard() -> dict[str, int]:
+    predictions = load_predictions()
 
-    print("Reading lightweight summary sheets only...")
+    outputs = {
+        BACKTEST_TABLE: build_backtest_history(predictions),
+        DASHBOARD_TABLE: build_dashboard_summary(predictions),
+        KPI_TABLE: build_kpis(predictions),
+        LEAGUE_TABLE: build_league_performance(predictions),
+        MARKET_TABLE: build_market_performance(predictions),
+        GRADE_TABLE: build_grade_summary(predictions),
+        STATUS_TABLE: build_file_status(),
+        NOTES_TABLE: build_notes(),
+    }
 
-    goals_summary = safe_read_excel(
-        GOALS_MODEL_FILE,
-        "Summary"
-    )
+    row_counts: dict[str, int] = {}
 
-    goals_league = safe_read_excel(
-        GOALS_MODEL_FILE,
-        "League_Summary"
-    )
+    for table_name, df in outputs.items():
+        row_counts[table_name] = replace_sqlite_table(table_name, df)
 
-    corners_summary = safe_read_excel(
-        CORNERS_MODEL_FILE,
-        "Summary"
-    )
+    create_indexes(BACKTEST_TABLE, ["MatchKey", "MatchDate", "League", "Market", "ConfidenceLabel", "GeneratedAt"])
+    create_indexes(LEAGUE_TABLE, ["League", "LatestMatchDate", "UpdatedAt"])
+    create_indexes(MARKET_TABLE, ["Market", "LatestMatchDate", "UpdatedAt"])
+    create_indexes(GRADE_TABLE, ["ConfidenceLabel", "ValueRating", "UpdatedAt"])
+    create_indexes(STATUS_TABLE, ["TableName", "Status", "CheckedAt"])
 
-    corners_league = safe_read_excel(
-        CORNERS_MODEL_FILE,
-        "League_Summary"
-    )
+    print("\nSQLite football performance reporting tables refreshed.")
+    for table_name, rows in row_counts.items():
+        print(f"{table_name}: {rows}")
+    print("=" * 38)
 
-    result_summary = safe_read_excel(
-        RESULT_MODEL_FILE,
-        "Summary"
-    )
-
-    result_league = safe_read_excel(
-        RESULT_MODEL_FILE,
-        "League_Summary"
-    )
-
-    ensemble_summary = safe_read_excel(
-        ENSEMBLE_FILE,
-        "Summary"
-    )
-
-    ensemble_league = safe_read_excel(
-        ENSEMBLE_FILE,
-        "League_Summary"
-    )
-
-    fixture_summary = safe_read_excel(
-        FIXTURE_PREDICTIONS_FILE,
-        "Summary"
-    )
-
-    fixture_league = safe_read_excel(
-        FIXTURE_PREDICTIONS_FILE,
-        "League_Summary"
-    )
-
-    dashboard_summary = build_dashboard_summary(
-        goals_summary=goals_summary,
-        corners_summary=corners_summary,
-        result_summary=result_summary,
-        ensemble_summary=ensemble_summary,
-        fixture_summary=fixture_summary
-    )
-
-    high_level_kpis = build_high_level_kpis(
-        goals_summary=goals_summary,
-        corners_summary=corners_summary,
-        result_summary=result_summary,
-        ensemble_summary=ensemble_summary,
-        fixture_summary=fixture_summary
-    )
-
-    file_status = build_model_file_status()
-
-    league_summary = combine_league_summaries(
-        goals_league=goals_league,
-        corners_league=corners_league,
-        result_league=result_league,
-        ensemble_league=ensemble_league,
-        fixture_league=fixture_league
-    )
-
-    with pd.ExcelWriter(
-        OUTPUT_FILE,
-        engine="openpyxl",
-        mode="w"
-    ) as writer:
-
-        high_level_kpis.to_excel(
-            writer,
-            sheet_name="High_Level_KPIs",
-            index=False
-        )
-
-        dashboard_summary.to_excel(
-            writer,
-            sheet_name="Dashboard_Summary",
-            index=False
-        )
-
-        league_summary.to_excel(
-            writer,
-            sheet_name="League_Performance",
-            index=False
-        )
-
-        file_status.to_excel(
-            writer,
-            sheet_name="File_Status",
-            index=False
-        )
-
-    print("\n======================================")
-    print("FOOTBALL MODEL PERFORMANCE DASHBOARD EXPORTED")
-    print("======================================")
-    print("Mode: Lightweight summary-only")
-    print(f"File: {OUTPUT_FILE}")
-    print("======================================\n")
-
-    return OUTPUT_FILE
+    return row_counts
 
 
-def main():
-    export_football_model_performance_dashboard()
+def main() -> dict[str, int]:
+    print("=" * 38)
+    print("SQLITE FOOTBALL MODEL PERFORMANCE")
+    print("=" * 38)
+    return export_football_model_performance_dashboard()
 
 
 if __name__ == "__main__":

@@ -1,687 +1,161 @@
-from pathlib import Path
-from datetime import datetime
+from __future__ import annotations
 
 import pandas as pd
 
-
-# =========================================================
-# PROJECT PATHS
-# =========================================================
-
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-FEATURES_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "processed"
-    / "features"
-)
-
-OUTPUT_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "models"
-)
-
-FEATURES_FOLDER = (
-    FEATURES_DIR
-    / "football_features_all_leagues"
-)
-
-FEATURES_CSV = (
-    FEATURES_FOLDER
-    / "match_features.csv"
-)
-
-FEATURES_XLSX = (
-    FEATURES_DIR
-    / "football_features_all_leagues.xlsx"
-)
-
-OUTPUT_FILE = (
-    OUTPUT_DIR
-    / "football_goals_model_predictions.xlsx"
+from src.football.models.sqlite_football_model_engine import (
+    GOALS_TABLE,
+    base_output_columns,
+    clamp_probability,
+    confidence_label,
+    load_match_features,
+    now_string,
+    safe_float,
+    save_model_table,
+    sigmoid,
 )
 
 
 # =========================================================
-# CONFIG
+# GOALS MODEL
 # =========================================================
 
-MIN_FEATURE_ROWS_PER_LEAGUE = 100
-
-GOALS_FEATURE_COLUMNS = [
-    "Home_GoalsFor_Last3",
-    "Home_GoalsAgainst_Last3",
-    "Away_GoalsFor_Last3",
-    "Away_GoalsAgainst_Last3",
-    "Home_GoalsFor_Last5",
-    "Home_GoalsAgainst_Last5",
-    "Away_GoalsFor_Last5",
-    "Away_GoalsAgainst_Last5",
-    "Home_GoalsFor_Last10",
-    "Home_GoalsAgainst_Last10",
-    "Away_GoalsFor_Last10",
-    "Away_GoalsAgainst_Last10",
-    "AttackStrengthDiff_Last5",
-    "DefenceWeaknessDiff_Last5",
-    "Home_Over25Goals_Last5",
-    "Away_Over25Goals_Last5",
-    "Home_BTTS_Last5",
-    "Away_BTTS_Last5",
-]
+MODEL_NAME = "SQLite Goals Signal Model"
+MODEL_VERSION = "football_goals_sqlite_v1"
 
 
-BASE_COLUMNS = [
-    "Season",
-    "SeasonCode",
-    "LeagueCode",
-    "League",
-    "Country",
-    "Tier",
-    "MatchDate",
-    "HomeTeam",
-    "AwayTeam",
-    "HomeGoals",
-    "AwayGoals",
-    "TotalGoals",
-    "Result",
-    "ResultLabel",
-    "BTTS",
-    "Over15Goals",
-    "Over25Goals",
-    "Over35Goals",
-]
+def _expected_goals(row: pd.Series) -> tuple[float, float, float]:
+    home_attack = safe_float(row.get("Home_GoalsFor_Last5"), safe_float(row.get("Home_GoalsFor_Last3"), 1.35))
+    away_attack = safe_float(row.get("Away_GoalsFor_Last5"), safe_float(row.get("Away_GoalsFor_Last3"), 1.15))
 
+    home_concede = safe_float(row.get("Home_GoalsAgainst_Last5"), safe_float(row.get("Home_GoalsAgainst_Last3"), 1.10))
+    away_concede = safe_float(row.get("Away_GoalsAgainst_Last5"), safe_float(row.get("Away_GoalsAgainst_Last3"), 1.30))
 
-# =========================================================
-# HELPERS
-# =========================================================
+    home_expected = (home_attack * 0.60) + (away_concede * 0.40)
+    away_expected = (away_attack * 0.60) + (home_concede * 0.40)
 
-def ensure_directories():
-    OUTPUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-
-def safe_read_features():
-    if FEATURES_CSV.exists():
-        print(f"Reading CSV features: {FEATURES_CSV}")
-        return pd.read_csv(
-            FEATURES_CSV
-        )
-
-    if FEATURES_XLSX.exists():
-        print(f"Reading Excel features: {FEATURES_XLSX}")
-        return pd.read_excel(
-            FEATURES_XLSX,
-            sheet_name="Match_Features",
-            engine="openpyxl"
-        )
-
-    print("No football feature file found.")
-    return pd.DataFrame()
-
-
-def add_missing_columns(
-    df,
-    columns
-):
-    for col in columns:
-        if col not in df.columns:
-            df[col] = None
-
-    return df
-
-
-def safe_numeric(
-    df,
-    col
-):
-    if col in df.columns:
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
-
-    return df
-
-
-def clamp_probability(value):
-    if pd.isna(value):
-        return 0.5
-
-    if value < 0:
-        return 0.0
-
-    if value > 1:
-        return 1.0
-
-    return float(value)
-
-
-def classify_probability(probability):
-    if probability >= 0.70:
-        return "High"
-
-    if probability >= 0.58:
-        return "Medium"
-
-    if probability >= 0.50:
-        return "Low"
-
-    return "Avoid"
-
-
-# =========================================================
-# MODEL LOGIC
-# =========================================================
-
-def calculate_expected_goals(row):
-    home_attack = row.get(
-        "Home_GoalsFor_Last5",
-        0
-    )
-
-    home_concede = row.get(
-        "Home_GoalsAgainst_Last5",
-        0
-    )
-
-    away_attack = row.get(
-        "Away_GoalsFor_Last5",
-        0
-    )
-
-    away_concede = row.get(
-        "Away_GoalsAgainst_Last5",
-        0
-    )
-
-    home_expected = (
-        (home_attack * 0.60)
-        + (away_concede * 0.40)
-    )
-
-    away_expected = (
-        (away_attack * 0.60)
-        + (home_concede * 0.40)
-    )
-
+    home_expected = max(home_expected, 0.15)
+    away_expected = max(away_expected, 0.10)
     total_expected = home_expected + away_expected
 
-    return home_expected, away_expected, total_expected
+    return round(home_expected, 3), round(away_expected, 3), round(total_expected, 3)
 
 
-def calculate_over_probability(
-    expected_goals,
-    line
-):
-    if expected_goals <= 0:
-        return 0.5
+def _goals_probabilities(row: pd.Series, total_expected: float) -> tuple[float, float, float, float]:
+    over15_base = sigmoid(total_expected, centre=1.80, scale=0.45)
+    over25_base = sigmoid(total_expected, centre=2.55, scale=0.50)
+    over35_base = sigmoid(total_expected, centre=3.35, scale=0.55)
 
-    if line == 1.5:
-        probability = (
-            0.25
-            + (expected_goals / 5.0)
-        )
+    home_over25 = safe_float(row.get("Home_Over25Goals_Last5"), 0.50)
+    away_over25 = safe_float(row.get("Away_Over25Goals_Last5"), 0.50)
+    over25_form = (home_over25 + away_over25) / 2
 
-    elif line == 2.5:
-        probability = (
-            0.15
-            + (expected_goals / 6.0)
-        )
+    home_btts = safe_float(row.get("Home_BTTS_Last5"), 0.50)
+    away_btts = safe_float(row.get("Away_BTTS_Last5"), 0.50)
+    btts_form = (home_btts + away_btts) / 2
 
-    elif line == 3.5:
-        probability = (
-            0.05
-            + (expected_goals / 8.0)
-        )
+    over15 = clamp_probability((over15_base * 0.75) + (over25_form * 0.25))
+    over25 = clamp_probability((over25_base * 0.70) + (over25_form * 0.30))
+    over35 = clamp_probability((over35_base * 0.80) + (over25_form * 0.20))
+    btts = clamp_probability((sigmoid(total_expected, centre=2.30, scale=0.65) * 0.45) + (btts_form * 0.55))
 
-    else:
-        probability = 0.5
-
-    return clamp_probability(
-        probability
-    )
+    return round(over15, 4), round(over25, 4), round(over35, 4), round(btts, 4)
 
 
-def calculate_btts_probability(row):
-    home_scoring = row.get(
-        "Home_GoalsFor_Last5",
-        0
-    )
-
-    away_scoring = row.get(
-        "Away_GoalsFor_Last5",
-        0
-    )
-
-    home_conceding = row.get(
-        "Home_GoalsAgainst_Last5",
-        0
-    )
-
-    away_conceding = row.get(
-        "Away_GoalsAgainst_Last5",
-        0
-    )
-
-    home_btts_rate = row.get(
-        "Home_BTTS_Last5",
-        0.5
-    )
-
-    away_btts_rate = row.get(
-        "Away_BTTS_Last5",
-        0.5
-    )
-
-    scoring_component = (
-        (home_scoring + away_scoring)
-        / 4.0
-    )
-
-    conceding_component = (
-        (home_conceding + away_conceding)
-        / 4.0
-    )
-
-    trend_component = (
-        home_btts_rate + away_btts_rate
-    ) / 2.0
-
-    probability = (
-        (scoring_component * 0.35)
-        + (conceding_component * 0.25)
-        + (trend_component * 0.40)
-    )
-
-    return clamp_probability(
-        probability
-    )
-
-
-def apply_goals_model(df):
-    model_df = df.copy()
-
-    expected_home = []
-    expected_away = []
-    expected_total = []
-
-    over15_probs = []
-    over25_probs = []
-    over35_probs = []
-    btts_probs = []
-
-    for _, row in model_df.iterrows():
-        home_xg, away_xg, total_xg = calculate_expected_goals(
-            row
-        )
-
-        expected_home.append(
-            round(home_xg, 3)
-        )
-
-        expected_away.append(
-            round(away_xg, 3)
-        )
-
-        expected_total.append(
-            round(total_xg, 3)
-        )
-
-        over15_probs.append(
-            round(
-                calculate_over_probability(
-                    total_xg,
-                    1.5
-                ),
-                3
-            )
-        )
-
-        over25_probs.append(
-            round(
-                calculate_over_probability(
-                    total_xg,
-                    2.5
-                ),
-                3
-            )
-        )
-
-        over35_probs.append(
-            round(
-                calculate_over_probability(
-                    total_xg,
-                    3.5
-                ),
-                3
-            )
-        )
-
-        btts_probs.append(
-            round(
-                calculate_btts_probability(
-                    row
-                ),
-                3
-            )
-        )
-
-    model_df["ExpectedHomeGoals"] = expected_home
-    model_df["ExpectedAwayGoals"] = expected_away
-    model_df["ExpectedTotalGoals"] = expected_total
-
-    model_df["Over15Probability"] = over15_probs
-    model_df["Over25Probability"] = over25_probs
-    model_df["Over35Probability"] = over35_probs
-    model_df["BTTSProbability"] = btts_probs
-
-    model_df["Over15Pick"] = model_df["Over15Probability"].apply(
-        classify_probability
-    )
-
-    model_df["Over25Pick"] = model_df["Over25Probability"].apply(
-        classify_probability
-    )
-
-    model_df["Over35Pick"] = model_df["Over35Probability"].apply(
-        classify_probability
-    )
-
-    model_df["BTTSPick"] = model_df["BTTSProbability"].apply(
-        classify_probability
-    )
-
-    return model_df
-
-
-# =========================================================
-# BACKTEST SCORING
-# =========================================================
-
-def score_predictions(model_df):
-    scored_df = model_df.copy()
-
-    scored_df["Over15Correct"] = (
-        (
-            scored_df["Over15Probability"] >= 0.58
-        )
-        == (
-            scored_df["Over15Goals"] == 1
-        )
-    ).astype(int)
-
-    scored_df["Over25Correct"] = (
-        (
-            scored_df["Over25Probability"] >= 0.58
-        )
-        == (
-            scored_df["Over25Goals"] == 1
-        )
-    ).astype(int)
-
-    scored_df["Over35Correct"] = (
-        (
-            scored_df["Over35Probability"] >= 0.58
-        )
-        == (
-            scored_df["Over35Goals"] == 1
-        )
-    ).astype(int)
-
-    scored_df["BTTSCorrect"] = (
-        (
-            scored_df["BTTSProbability"] >= 0.58
-        )
-        == (
-            scored_df["BTTS"] == 1
-        )
-    ).astype(int)
-
-    return scored_df
-
-
-def build_summary(scored_df):
-    if scored_df.empty:
-        return pd.DataFrame()
-
-    rows = []
-
-    metrics = [
-        {
-            "Model": "Over 1.5 Goals",
-            "ProbabilityColumn": "Over15Probability",
-            "ActualColumn": "Over15Goals",
-            "CorrectColumn": "Over15Correct",
-        },
-        {
-            "Model": "Over 2.5 Goals",
-            "ProbabilityColumn": "Over25Probability",
-            "ActualColumn": "Over25Goals",
-            "CorrectColumn": "Over25Correct",
-        },
-        {
-            "Model": "Over 3.5 Goals",
-            "ProbabilityColumn": "Over35Probability",
-            "ActualColumn": "Over35Goals",
-            "CorrectColumn": "Over35Correct",
-        },
-        {
-            "Model": "BTTS",
-            "ProbabilityColumn": "BTTSProbability",
-            "ActualColumn": "BTTS",
-            "CorrectColumn": "BTTSCorrect",
-        },
+def _best_goals_signal(over15: float, over25: float, over35: float, btts: float) -> tuple[str, str, float]:
+    candidates = [
+        ("Goals", "Over 1.5 Goals", over15),
+        ("Goals", "Over 2.5 Goals", over25),
+        ("Goals", "Over 3.5 Goals", over35),
+        ("Goals", "BTTS Yes", btts),
     ]
 
-    for metric in metrics:
-        correct_col = metric["CorrectColumn"]
-        probability_col = metric["ProbabilityColumn"]
-        actual_col = metric["ActualColumn"]
-
-        rows.append({
-            "Model": metric["Model"],
-            "RowsScored": len(scored_df),
-            "AverageProbability": round(
-                scored_df[probability_col].mean(),
-                3
-            ),
-            "ActualHitRate": round(
-                scored_df[actual_col].mean(),
-                3
-            ),
-            "PredictionAccuracy": round(
-                scored_df[correct_col].mean(),
-                3
-            ),
-        })
-
-    return pd.DataFrame(rows)
+    best_market, best_signal, best_probability = max(candidates, key=lambda item: item[2])
+    return best_market, best_signal, round(best_probability, 4)
 
 
-def build_league_summary(scored_df):
-    if scored_df.empty:
+def build_goals_predictions() -> pd.DataFrame:
+    df = load_match_features()
+
+    if df.empty:
         return pd.DataFrame()
 
-    league_summary = (
-        scored_df
-        .groupby(
-            [
-                "Tier",
-                "Country",
-                "League",
-            ],
-            dropna=False
-        )
-        .agg(
-            Rows=("League", "count"),
-            AvgExpectedGoals=("ExpectedTotalGoals", "mean"),
-            AvgOver15Probability=("Over15Probability", "mean"),
-            AvgOver25Probability=("Over25Probability", "mean"),
-            AvgBTTSProbability=("BTTSProbability", "mean"),
-            Over15Accuracy=("Over15Correct", "mean"),
-            Over25Accuracy=("Over25Correct", "mean"),
-            Over35Accuracy=("Over35Correct", "mean"),
-            BTTSAccuracy=("BTTSCorrect", "mean"),
-        )
-        .reset_index()
-    )
+    rows: list[dict] = []
+    generated_at = now_string()
 
-    numeric_cols = [
-        "AvgExpectedGoals",
-        "AvgOver15Probability",
-        "AvgOver25Probability",
-        "AvgBTTSProbability",
-        "Over15Accuracy",
-        "Over25Accuracy",
-        "Over35Accuracy",
-        "BTTSAccuracy",
+    for _, row in df.iterrows():
+        home_expected, away_expected, total_expected = _expected_goals(row)
+        over15, over25, over35, btts = _goals_probabilities(row, total_expected)
+        market, signal, probability = _best_goals_signal(over15, over25, over35, btts)
+
+        output = row.to_dict()
+        output.update(
+            {
+                "ModelName": MODEL_NAME,
+                "ModelVersion": MODEL_VERSION,
+                "Market": market,
+                "PrimaryMarketSignal": signal,
+                "GoalsSignal": signal,
+                "HomeExpectedGoals": home_expected,
+                "AwayExpectedGoals": away_expected,
+                "ExpectedTotalGoals": total_expected,
+                "Over15GoalsProbability": over15,
+                "Over25GoalsProbability": over25,
+                "Over35GoalsProbability": over35,
+                "BTTSProbability": btts,
+                "ModelProbability": probability,
+                "ConfidenceScore": probability,
+                "ConfidenceLabel": confidence_label(probability),
+                "ElitePrediction": 1 if probability >= 0.85 else 0,
+                "GeneratedAt": generated_at,
+            }
+        )
+        rows.append(output)
+
+    out = pd.DataFrame(rows)
+
+    preferred_columns = base_output_columns() + [
+        "ModelName",
+        "ModelVersion",
+        "Market",
+        "PrimaryMarketSignal",
+        "GoalsSignal",
+        "HomeExpectedGoals",
+        "AwayExpectedGoals",
+        "ExpectedTotalGoals",
+        "Over15GoalsProbability",
+        "Over25GoalsProbability",
+        "Over35GoalsProbability",
+        "BTTSProbability",
+        "ModelProbability",
+        "ConfidenceScore",
+        "ConfidenceLabel",
+        "ElitePrediction",
+        "GeneratedAt",
     ]
 
-    for col in numeric_cols:
-        league_summary[col] = league_summary[col].round(
-            3
-        )
+    columns = [col for col in preferred_columns if col in out.columns]
+    extra_columns = [col for col in out.columns if col not in columns]
 
-    return league_summary
+    return out[columns + extra_columns]
 
 
-# =========================================================
-# EXPORT
-# =========================================================
+def export_goals_predictions() -> pd.DataFrame:
+    predictions = build_goals_predictions()
+    rows = save_model_table(GOALS_TABLE, predictions)
 
-def export_goals_model():
-    ensure_directories()
+    print("\nSQLite football goals model refreshed.")
+    print(f"Table: {GOALS_TABLE}")
+    print(f"Rows : {rows}")
 
-    features_df = safe_read_features()
-
-    if features_df.empty:
-        print("No feature data available.")
-        return pd.DataFrame()
-
-    features_df = add_missing_columns(
-        features_df,
-        BASE_COLUMNS + GOALS_FEATURE_COLUMNS
-    )
-
-    features_df["MatchDate"] = pd.to_datetime(
-        features_df["MatchDate"],
-        errors="coerce"
-    )
-
-    for col in GOALS_FEATURE_COLUMNS + [
-        "HomeGoals",
-        "AwayGoals",
-        "TotalGoals",
-        "BTTS",
-        "Over15Goals",
-        "Over25Goals",
-        "Over35Goals",
-    ]:
-        features_df = safe_numeric(
-            features_df,
-            col
-        )
-
-    model_input_df = features_df[
-        features_df["MatchDate"].notna()
-    ].copy()
-
-    model_input_df = model_input_df[
-        model_input_df["TotalGoals"].notna()
-    ].copy()
-
-    scored_df = apply_goals_model(
-        model_input_df
-    )
-
-    scored_df = score_predictions(
-        scored_df
-    )
-
-    output_cols = [
-        col for col in (
-            BASE_COLUMNS
-            + [
-                "ExpectedHomeGoals",
-                "ExpectedAwayGoals",
-                "ExpectedTotalGoals",
-                "Over15Probability",
-                "Over15Pick",
-                "Over15Correct",
-                "Over25Probability",
-                "Over25Pick",
-                "Over25Correct",
-                "Over35Probability",
-                "Over35Pick",
-                "Over35Correct",
-                "BTTSProbability",
-                "BTTSPick",
-                "BTTSCorrect",
-            ]
-        )
-        if col in scored_df.columns
-    ]
-
-    output_df = scored_df[
-        output_cols
-    ].copy()
-
-    summary_df = build_summary(
-        scored_df
-    )
-
-    league_summary_df = build_league_summary(
-        scored_df
-    )
-
-    with pd.ExcelWriter(
-        OUTPUT_FILE,
-        engine="openpyxl",
-        mode="w"
-    ) as writer:
-
-        output_df.to_excel(
-            writer,
-            sheet_name="Goals_Model_Predictions",
-            index=False
-        )
-
-        summary_df.to_excel(
-            writer,
-            sheet_name="Summary",
-            index=False
-        )
-
-        league_summary_df.to_excel(
-            writer,
-            sheet_name="League_Summary",
-            index=False
-        )
-
-    print("\n======================================")
-    print("FOOTBALL GOALS MODEL EXPORTED")
-    print("======================================")
-    print(f"Rows: {len(output_df)}")
-    print(f"File: {OUTPUT_FILE}")
-    print("======================================\n")
-
-    return output_df
+    return predictions
 
 
-# =========================================================
-# CLI
-# =========================================================
-
-def main():
-    export_goals_model()
+def main() -> None:
+    print("=" * 38)
+    print("SQLITE FOOTBALL GOALS MODEL")
+    print("=" * 38)
+    export_goals_predictions()
+    print("=" * 38)
 
 
 if __name__ == "__main__":

@@ -1,220 +1,111 @@
-from pathlib import Path
+from __future__ import annotations
 
 import pandas as pd
 
-from src.lottery.features.base_lottery_features import (
-    load_lottery_history,
-    add_base_features,
-)
+from src.data.sqlite_store import replace_sqlite_table, create_indexes
+from src.lottery.features.base_lottery_features import load_lottery_history, add_base_features
+from src.lottery.config.lottery_game_rules import get_rule_for_draw
 
 
-# =========================================================
-# PROJECT PATHS
-# =========================================================
-
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-FEATURES_DIR = BASE_DIR / "data" / "processed" / "features"
-
-OUTPUT_FILE = FEATURES_DIR / "powerball_features.xlsx"
+POWERBALL_FEATURES_TABLE = "lottery_powerball_features"
 
 
-# =========================================================
-# POWERBALL FEATURE ENGINE
-# =========================================================
+def _bonus_midpoint(row: pd.Series) -> int:
+    rule = get_rule_for_draw(row.get("GameName", "PowerBall"), row.get("DrawDate"))
+    return (rule.bonus_max // 2) if rule and rule.bonus_max else 10
 
-def add_powerball_features(df):
-    """
-    Build PowerBall-specific features from the
-    master lottery historical dataset.
-    """
 
+def _bonus_band(row: pd.Series) -> str:
+    bonus = row.get("Bonus")
+    if pd.isna(bonus):
+        return "None"
+
+    rule = get_rule_for_draw(row.get("GameName", "PowerBall"), row.get("DrawDate"))
+    max_bonus = rule.bonus_max if rule and rule.bonus_max else 20
+    value = int(bonus)
+
+    if max_bonus <= 16:
+        bins = [(1, 4), (5, 8), (9, 12), (13, 16)]
+    else:
+        bins = [(1, 5), (6, 10), (11, 15), (16, 20)]
+
+    for low, high in bins:
+        if low <= value <= high:
+            return f"{low}-{high}"
+
+    return "Out of range"
+
+
+def add_powerball_features(df: pd.DataFrame) -> pd.DataFrame:
     features = add_base_features(df)
-
-    # -----------------------------------------------------
-    # Filter PowerBall Family
-    # -----------------------------------------------------
-
-    features = features[
-        features["GameFamily"] == "PowerBall"
-    ].copy()
+    features = features[features["GameFamily"] == "PowerBall"].copy()
 
     if features.empty:
         return features
 
-    # -----------------------------------------------------
-    # Game Type Flags
-    # -----------------------------------------------------
+    features["IsPowerBallMain"] = (features["GameName"] == "PowerBall").astype(int)
+    features["IsPowerBallPlus"] = (features["GameName"] == "PowerBall Plus").astype(int)
 
-    features["IsPowerBallMain"] = (
-        features["GameName"] == "PowerBall"
-    ).astype(int)
-
-    features["IsPowerBallPlus"] = (
-        features["GameName"] == "PowerBall Plus"
-    ).astype(int)
-
-    # -----------------------------------------------------
-    # PowerBall Bonus Analysis
-    # -----------------------------------------------------
-
-    features["BonusLowHigh"] = features["Bonus"].apply(
-        lambda x: (
-            "Low"
-            if pd.notna(x) and int(x) <= 10
-            else "High"
-        )
+    features["BonusLowHigh"] = features.apply(
+        lambda row: "None" if pd.isna(row.get("Bonus")) else ("Low" if int(row.get("Bonus")) <= _bonus_midpoint(row) else "High"),
+        axis=1,
     )
-
     features["BonusOddEven"] = features["Bonus"].apply(
-        lambda x: (
-            "Odd"
-            if pd.notna(x) and int(x) % 2 != 0
-            else "Even"
-        )
+        lambda x: "None" if pd.isna(x) else ("Odd" if int(x) % 2 != 0 else "Even")
     )
-
-    features["BonusBand"] = pd.cut(
-        features["Bonus"],
-        bins=[0, 5, 10, 15, 20],
-        labels=[
-            "1-5",
-            "6-10",
-            "11-15",
-            "16-20",
-        ],
-        include_lowest=True
-    )
-
-    # -----------------------------------------------------
-    # Game Structure
-    # -----------------------------------------------------
-
-    features["RegularRange"] = "1-50"
-    features["BonusRange"] = "1-20"
+    features["BonusBand"] = features.apply(_bonus_band, axis=1)
 
     features["RegularStructure"] = (
-        features["HighCount"].astype(str)
-        + "H-"
-        + features["LowCount"].astype(str)
-        + "L"
+        features["HighCount"].astype(str) + "H-" + features["LowCount"].astype(str) + "L"
     )
 
     features["OddEvenStructure"] = (
-        features["OddCount"].astype(str)
-        + "O-"
-        + features["EvenCount"].astype(str)
-        + "E"
+        features["OddCount"].astype(str) + "O-" + features["EvenCount"].astype(str) + "E"
     )
-
-    # -----------------------------------------------------
-    # Sum Groupings
-    # -----------------------------------------------------
 
     features["SumBand"] = pd.cut(
         features["RegularSum"],
         bins=[0, 90, 130, 180, 250],
-        labels=[
-            "Low Sum",
-            "Mid Sum",
-            "High Sum",
-            "Extreme Sum",
-        ],
-        include_lowest=True
+        labels=["Low Sum", "Mid Sum", "High Sum", "Extreme Sum"],
+        include_lowest=True,
     )
-
-    # -----------------------------------------------------
-    # Spread Groupings
-    # -----------------------------------------------------
 
     features["SpreadBand"] = pd.cut(
         features["NumberSpread"],
         bins=[0, 15, 25, 35, 50],
-        labels=[
-            "Tight",
-            "Balanced",
-            "Wide",
-            "Extreme",
-        ],
-        include_lowest=True
+        labels=["Tight", "Balanced", "Wide", "Extreme"],
+        include_lowest=True,
     )
 
-    # -----------------------------------------------------
-    # Consecutive Number Flags
-    # -----------------------------------------------------
-
-    features["HasConsecutive"] = (
-        features["ConsecutivePairs"] > 0
-    ).astype(int)
-
+    features["HasConsecutive"] = (features["ConsecutivePairs"] > 0).astype(int)
     features["ConsecutiveCategory"] = pd.cut(
         features["ConsecutivePairs"],
         bins=[-1, 0, 1, 5],
-        labels=[
-            "None",
-            "Light",
-            "Heavy",
-        ]
+        labels=["None", "Light", "Heavy"],
     )
 
-    # -----------------------------------------------------
-    # Draw Day Features
-    # -----------------------------------------------------
+    features["IsTuesdayDraw"] = (features["DrawDay"] == "Tuesday").astype(int)
+    features["IsFridayDraw"] = (features["DrawDay"] == "Friday").astype(int)
 
-    features["IsTuesdayDraw"] = (
-        features["DrawDay"] == "Tuesday"
-    ).astype(int)
-
-    features["IsFridayDraw"] = (
-        features["DrawDay"] == "Friday"
-    ).astype(int)
-
-    # -----------------------------------------------------
-    # Rolling Sequence ID
-    # -----------------------------------------------------
-
-    features = features.sort_values(
-        by=["DrawDate"],
-        ascending=False
-    ).reset_index(drop=True)
-
-    features["HistoricalSequence"] = (
-        features.index + 1
-    )
+    features = features.sort_values(by=["DrawDate"], ascending=False).reset_index(drop=True)
+    features["HistoricalSequence"] = features.index + 1
 
     return features
 
 
-# =========================================================
-# EXPORT
-# =========================================================
-
-def export_powerball_features():
-    FEATURES_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
+def export_powerball_features() -> pd.DataFrame:
     df = load_lottery_history()
-
     features = add_powerball_features(df)
 
-    features.to_excel(
-        OUTPUT_FILE,
-        sheet_name="PowerBall_Features",
-        index=False
-    )
+    rows = replace_sqlite_table(POWERBALL_FEATURES_TABLE, features)
+    create_indexes(POWERBALL_FEATURES_TABLE, ["GameFamily", "GameName", "DrawDate"])
 
-    print("\nPowerBall features exported.")
-    print(f"Rows: {len(features)}")
-    print(f"File: {OUTPUT_FILE}")
+    print("\nPowerBall features saved to SQLite.")
+    print(f"Table: {POWERBALL_FEATURES_TABLE}")
+    print(f"Rows : {rows}")
 
     return features
 
-
-# =========================================================
-# QUICK TEST
-# =========================================================
 
 if __name__ == "__main__":
     export_powerball_features()

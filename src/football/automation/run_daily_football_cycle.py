@@ -1,460 +1,269 @@
-import importlib
-import traceback
+from __future__ import annotations
+
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from time import perf_counter
+import traceback
+from typing import Any, Callable
 
 import pandas as pd
 
-
-# =========================================================
-# IMPORT FOOTBALL PIPELINE - DAILY CORE
-# =========================================================
-
-from src.football.data_ingestion.build_football_fixtures import (
-    export_fixtures,
-)
-
-from HexagrandHouse_VSCode.src.football.predict_fixtures import (
-    export_fixture_predictions,
-)
-
-from src.football.backtesting.archive_daily_predictions import (
-    archive_daily_predictions,
-)
-
-from src.football.backtesting.fixture_prediction_backtester import (
-    export_fixture_prediction_backtest,
-)
-
-from src.football.backtesting.cleanup_past_fixtures import (
-    cleanup_past_fixtures,
-)
-
-from src.football.reporting.football_model_performance_dashboard import (
-    export_football_model_performance_dashboard,
-)
-
-from src.football.reporting.top_plays_report import (
-    export_top_plays_report,
-)
-
-from src.football.value.value_bet_engine import (
-    export_value_bets,
-)
+from src.data.sqlite_store import append_sqlite_table, create_indexes, replace_sqlite_table
+from src.football.features.export_football_features import export_football_features
+from src.football.models.export_football_models import export_football_models
+from src.football.reporting.export_football_reporting import export_football_reporting
 
 
 # =========================================================
-# OPTIONAL HEAVY TASK SETTINGS
+# SQLITE-FIRST DAILY FOOTBALL CYCLE
 # =========================================================
 
-ENABLE_FULL_MASTER_REFRESH = True
-ENABLE_FULL_FEATURE_REFRESH = True
-ENABLE_FULL_MODEL_REFRESH = True
+RUN_LOG_TABLE = "platform_run_log"
+REFRESH_STATUS_TABLE = "platform_refresh_status"
+PIPELINE_NAME = "SQLite Football Daily Cycle"
 
 
-# =========================================================
-# SAFE OPTIONAL IMPORT HELPER
-# =========================================================
+@dataclass
+class CycleStep:
+    name: str
+    function: Callable[[], Any]
+    required: bool = True
 
-def optional_import(module_path, possible_function_names):
+
+def current_timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_row_count(result: Any) -> int | None:
     try:
-        module = importlib.import_module(module_path)
+        if isinstance(result, pd.DataFrame):
+            return int(len(result))
 
-        for function_name in possible_function_names:
-            if hasattr(module, function_name):
-                return getattr(module, function_name)
+        if isinstance(result, list):
+            if all(isinstance(item, dict) for item in result):
+                total = 0
+                found = False
+                for item in result:
+                    for key in ["Rows", "RowCount", "RowsProcessed"]:
+                        if key in item and item.get(key) is not None:
+                            total += int(item.get(key) or 0)
+                            found = True
+                            break
+                return total if found else len(result)
+            return len(result)
 
-        print("\nWARNING:")
-        print(f"No matching function found in {module_path}")
-        print(f"Tried: {possible_function_names}")
+        if isinstance(result, tuple):
+            counts = [_safe_row_count(item) for item in result]
+            counts = [count for count in counts if count is not None]
+            return sum(counts) if counts else None
+
+        if isinstance(result, dict):
+            for key in ["Rows", "RowCount", "RowsProcessed"]:
+                if key in result and result[key] is not None:
+                    return int(result[key])
+
+            total = 0
+            found = False
+            for value in result.values():
+                count = _safe_row_count(value)
+                if count is not None:
+                    total += int(count)
+                    found = True
+            return total if found else None
+
+    except Exception:
         return None
 
-    except Exception as e:
-        print("\nWARNING:")
-        print(f"Could not import optional module: {module_path}")
-        print(f"Error: {e}")
-        return None
+    return None
 
 
-build_football_master_dataset = optional_import(
-    "src.football.data_ingestion.build_UKDATA27_football_master_dataset",
-    [
-        "build_football_master_dataset",
-        "export_football_master_dataset",
-        "build_UKDATA27_football_master_dataset",
-        "export_master_dataset",
-        "main",
-    ],
-)
+def _run_step(step: CycleStep, run_id: str) -> dict[str, Any]:
+    print("\n======================================")
+    print(f"RUNNING: {step.name}")
+    print("======================================")
 
-build_football_features = optional_import(
-    "src.football.features.build_football_features",
-    [
-        "build_football_features",
-        "export_football_features",
-        "main",
-    ],
-)
-
-export_goals_model = optional_import(
-    "src.football.models.goals_model",
-    [
-        "export_goals_model",
-        "main",
-    ],
-)
-
-export_result_model = optional_import(
-    "src.football.models.result_model",
-    [
-        "export_result_model",
-        "main",
-    ],
-)
-
-export_corners_model = optional_import(
-    "src.football.models.corners_model",
-    [
-        "export_corners_model",
-        "main",
-    ],
-)
-
-export_ensemble_predictions = optional_import(
-    "src.football.models.ensemble_engine",
-    [
-        "export_ensemble_predictions",
-        "main",
-    ],
-)
-
-
-# =========================================================
-# PATHS
-# =========================================================
-
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-LOG_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "logs"
-)
-
-LOG_FILE = (
-    LOG_DIR
-    / "daily_football_cycle_log.xlsx"
-)
-
-
-# =========================================================
-# HELPERS
-# =========================================================
-
-def ensure_directories():
-    LOG_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-
-def append_log(rows):
-    log_df = pd.DataFrame(rows)
-
-    if LOG_FILE.exists():
-        try:
-            existing_df = pd.read_excel(
-                LOG_FILE,
-                sheet_name="Football_Cycle_Log",
-                engine="openpyxl"
-            )
-
-            log_df = pd.concat(
-                [
-                    existing_df,
-                    log_df,
-                ],
-                ignore_index=True
-            )
-
-        except Exception:
-            pass
-
-    with pd.ExcelWriter(
-        LOG_FILE,
-        engine="openpyxl",
-        mode="w"
-    ) as writer:
-        log_df.to_excel(
-            writer,
-            sheet_name="Football_Cycle_Log",
-            index=False
-        )
-
-
-def execute_step(
-    step_name,
-    function_reference,
-    log_rows
-):
-    print("\n================================================")
-    print(f"RUNNING: {step_name}")
-    print("================================================")
-
-    start_time = perf_counter()
-
-    status = "Success"
-    error_message = ""
+    started_at = datetime.now()
 
     try:
-        if function_reference is None:
-            status = "Skipped"
-            error_message = "Function reference not available."
-            print(error_message)
+        result = step.function()
+        finished_at = datetime.now()
+        duration = round((finished_at - started_at).total_seconds(), 2)
+        row_count = _safe_row_count(result)
 
-        else:
-            function_reference()
-
-    except Exception as e:
-        status = "Failed"
-        error_message = str(e)
-
-        print("\nERROR:")
-        print(error_message)
-
-        traceback.print_exc()
-
-    duration = round(
-        perf_counter() - start_time,
-        2
-    )
-
-    log_rows.append(
-        {
-            "RunTimestamp": datetime.now(),
-            "StepName": step_name,
-            "Status": status,
+        log_row = {
+            "RunID": run_id,
+            "PipelineName": PIPELINE_NAME,
+            "StepName": step.name,
+            "Status": "Success",
+            "StartedAt": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "FinishedAt": finished_at.strftime("%Y-%m-%d %H:%M:%S"),
             "DurationSeconds": duration,
+            "RowsProcessed": row_count,
+            "ErrorMessage": "",
+        }
+
+        print(f"\nSUCCESS: {step.name}")
+        print(f"Duration: {duration} sec")
+        if row_count is not None:
+            print(f"Rows: {row_count}")
+
+        return log_row
+
+    except Exception as exc:
+        finished_at = datetime.now()
+        duration = round((finished_at - started_at).total_seconds(), 2)
+        error_message = str(exc)
+        traceback_text = traceback.format_exc()
+
+        log_row = {
+            "RunID": run_id,
+            "PipelineName": PIPELINE_NAME,
+            "StepName": step.name,
+            "Status": "Failed",
+            "StartedAt": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "FinishedAt": finished_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "DurationSeconds": duration,
+            "RowsProcessed": None,
             "ErrorMessage": error_message,
         }
+
+        print(f"\nFAILED: {step.name}")
+        print(f"Duration: {duration} sec")
+        print(f"Error: {error_message}")
+        print("\nTRACEBACK:")
+        print(traceback_text)
+
+        if step.required:
+            raise
+
+        return log_row
+
+
+def _write_run_logs(logs: list[dict[str, Any]]) -> int:
+    log_df = pd.DataFrame(logs)
+    rows = append_sqlite_table(RUN_LOG_TABLE, log_df)
+    create_indexes(RUN_LOG_TABLE, ["RunID", "PipelineName", "StepName", "Status", "StartedAt"])
+    return rows
+
+
+def _write_refresh_status(
+    run_id: str,
+    logs: list[dict[str, Any]],
+    started_at: datetime,
+    finished_at: datetime,
+) -> pd.DataFrame:
+    success_count = sum(1 for row in logs if row["Status"] == "Success")
+    failure_count = sum(1 for row in logs if row["Status"] == "Failed")
+    total_duration = round((finished_at - started_at).total_seconds(), 2)
+
+    status_df = pd.DataFrame(
+        [
+            {
+                "RunID": run_id,
+                "PipelineName": PIPELINE_NAME,
+                "Status": "Success" if failure_count == 0 else "Failed",
+                "StartedAt": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "FinishedAt": finished_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "DurationSeconds": total_duration,
+                "SuccessCount": success_count,
+                "FailureCount": failure_count,
+                "UpdatedAt": current_timestamp(),
+            }
+        ]
     )
 
-    print(f"\nSTATUS   : {status}")
-    print(f"DURATION : {duration} seconds")
-
-    return status == "Success"
-
-
-def add_step(
-    pipeline_steps,
-    step_name,
-    function_reference,
-    enabled=True
-):
-    if enabled:
-        pipeline_steps.append(
-            (
-                step_name,
-                function_reference,
-            )
-        )
+    replace_sqlite_table(REFRESH_STATUS_TABLE, status_df)
+    create_indexes(REFRESH_STATUS_TABLE, ["RunID", "PipelineName", "Status", "UpdatedAt"])
+    return status_df
 
 
-# =========================================================
-# MAIN DAILY FOOTBALL PIPELINE
-# =========================================================
-
-def run_daily_football_cycle():
-    ensure_directories()
-
-    print("\n================================================")
-    print("DAILY FOOTBALL PIPELINE")
-    print("================================================")
-
-    log_rows = []
-    pipeline_steps = []
-
-    # =====================================================
-    # 1. SCORE HISTORICAL PREDICTIONS FIRST
-    # =====================================================
-
-    add_step(
-        pipeline_steps,
-        "Backtest Previous Fixture Predictions",
-        export_fixture_prediction_backtest,
-        enabled=True
-    )
-
-    # =====================================================
-    # 2. CLEANUP EXPIRED FIXTURES
-    # =====================================================
-
-    add_step(
-        pipeline_steps,
-        "Cleanup Past Fixtures",
-        cleanup_past_fixtures,
-        enabled=True
-    )
-
-    # =====================================================
-    # 3. OPTIONAL HEAVY REFRESHES
-    # =====================================================
-
-    add_step(
-        pipeline_steps,
-        "Build Football Master Dataset",
-        build_football_master_dataset,
-        enabled=ENABLE_FULL_MASTER_REFRESH
-    )
-
-    add_step(
-        pipeline_steps,
-        "Build Football Features",
-        build_football_features,
-        enabled=ENABLE_FULL_FEATURE_REFRESH
-    )
-
-    add_step(
-        pipeline_steps,
-        "Goals Model",
-        export_goals_model,
-        enabled=ENABLE_FULL_MODEL_REFRESH
-    )
-
-    add_step(
-        pipeline_steps,
-        "Result Model",
-        export_result_model,
-        enabled=ENABLE_FULL_MODEL_REFRESH
-    )
-
-    add_step(
-        pipeline_steps,
-        "Corners Model",
-        export_corners_model,
-        enabled=ENABLE_FULL_MODEL_REFRESH
-    )
-
-    add_step(
-        pipeline_steps,
-        "Historical Ensemble Engine",
-        export_ensemble_predictions,
-        enabled=ENABLE_FULL_MODEL_REFRESH
-    )
-
-    # =====================================================
-    # 4. BUILD FRESH FIXTURES
-    # =====================================================
-
-    add_step(
-        pipeline_steps,
-        "Build Football Fixtures",
-        export_fixtures,
-        enabled=True
-    )
-
-    # =====================================================
-    # 5. GENERATE PREDICTIONS
-    # =====================================================
-
-    add_step(
-        pipeline_steps,
-        "Predict Football Fixtures",
-        export_fixture_predictions,
-        enabled=True
-    )
-
-    # =====================================================
-    # 6. ARCHIVE PREDICTIONS
-    # =====================================================
-
-    add_step(
-        pipeline_steps,
-        "Archive Daily Predictions",
-        archive_daily_predictions,
-        enabled=True
-    )
-
-    # =====================================================
-    # 7. VALUE ENGINE
-    # =====================================================
-
-    add_step(
-        pipeline_steps,
-        "Football Value Bet Engine",
-        export_value_bets,
-        enabled=True
-    )
-
-    # =====================================================
-    # 8. DASHBOARDS
-    # =====================================================
-
-    add_step(
-        pipeline_steps,
-        "Football Performance Dashboard",
-        export_football_model_performance_dashboard,
-        enabled=True
-    )
-
-    add_step(
-        pipeline_steps,
-        "Top Plays Report",
-        export_top_plays_report,
-        enabled=True
-    )
-
-    successful_steps = 0
-    failed_steps = 0
-    skipped_steps = 0
-
-    overall_start = perf_counter()
-
-    for step_name, function_reference in pipeline_steps:
-
-        execute_step(
-            step_name=step_name,
-            function_reference=function_reference,
-            log_rows=log_rows
-        )
-
-        latest_status = log_rows[-1]["Status"]
-
-        if latest_status == "Success":
-            successful_steps += 1
-
-        elif latest_status == "Skipped":
-            skipped_steps += 1
-
-        else:
-            failed_steps += 1
-
-    total_duration = round(
-        perf_counter() - overall_start,
-        2
-    )
-
-    append_log(log_rows)
-
-    print("\n================================================")
-    print("DAILY FOOTBALL PIPELINE COMPLETE")
-    print("================================================")
-    print(f"Successful Steps : {successful_steps}")
-    print(f"Failed Steps     : {failed_steps}")
-    print(f"Skipped Steps    : {skipped_steps}")
-    print(f"Total Duration   : {total_duration} seconds")
-    print(f"Log File         : {LOG_FILE}")
-    print("================================================\n")
+def build_cycle_steps() -> list[CycleStep]:
+    return [
+        CycleStep(
+            name="Build Football Feature Tables",
+            function=export_football_features,
+            required=True,
+        ),
+        CycleStep(
+            name="Generate Football Model Tables",
+            function=export_football_models,
+            required=True,
+        ),
+        CycleStep(
+            name="Build Football Reporting Tables",
+            function=export_football_reporting,
+            required=False,
+        ),
+    ]
 
 
-# =========================================================
-# CLI
-# =========================================================
+def run_daily_football_cycle() -> dict[str, Any]:
+    cycle_start = datetime.now()
+    run_id = cycle_start.strftime("%Y%m%d_%H%M%S")
 
-def main():
-    run_daily_football_cycle()
+    print("\n======================================")
+    print("HEXAGRANDHOUSE FOOTBALL DAILY CYCLE")
+    print("SQLite-first runtime mode")
+    print("======================================")
+    print(f"Run ID : {run_id}")
+    print(f"Started: {cycle_start.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("======================================\n")
+
+    logs: list[dict[str, Any]] = []
+
+    for step in build_cycle_steps():
+        try:
+            logs.append(_run_step(step, run_id=run_id))
+        except Exception:
+            failed_log = logs[-1] if logs else None
+            if failed_log is None or failed_log.get("StepName") != step.name:
+                logs.append(
+                    {
+                        "RunID": run_id,
+                        "PipelineName": PIPELINE_NAME,
+                        "StepName": step.name,
+                        "Status": "Failed",
+                        "StartedAt": current_timestamp(),
+                        "FinishedAt": current_timestamp(),
+                        "DurationSeconds": 0,
+                        "RowsProcessed": None,
+                        "ErrorMessage": "Step failed before log row could be captured.",
+                    }
+                )
+            break
+
+    cycle_end = datetime.now()
+    _write_run_logs(logs)
+    status_df = _write_refresh_status(run_id, logs, cycle_start, cycle_end)
+
+    success_count = int(status_df.iloc[0]["SuccessCount"])
+    failure_count = int(status_df.iloc[0]["FailureCount"])
+    duration = float(status_df.iloc[0]["DurationSeconds"])
+
+    print("\n======================================")
+    print("FOOTBALL DAILY CYCLE COMPLETE")
+    print("======================================")
+    print(f"Run ID  : {run_id}")
+    print(f"Finished: {cycle_end.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Duration: {duration} sec")
+    print(f"Success : {success_count}")
+    print(f"Failed  : {failure_count}")
+    print(f"Log Tbl : {RUN_LOG_TABLE}")
+    print("======================================\n")
+
+    return {
+        "RunID": run_id,
+        "PipelineName": PIPELINE_NAME,
+        "Status": "Success" if failure_count == 0 else "Failed",
+        "SuccessCount": success_count,
+        "FailureCount": failure_count,
+        "DurationSeconds": duration,
+        "RunLogTable": RUN_LOG_TABLE,
+        "RefreshStatusTable": REFRESH_STATUS_TABLE,
+    }
+
+
+def main() -> dict[str, Any]:
+    return run_daily_football_cycle()
 
 
 if __name__ == "__main__":

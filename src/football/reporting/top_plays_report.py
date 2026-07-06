@@ -1,682 +1,246 @@
-from pathlib import Path
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 
-
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-PREDICTIONS_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "predictions"
-)
-
-REPORTING_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "reporting"
-)
-
-FIXTURE_PREDICTIONS_FILE = (
-    PREDICTIONS_DIR
-    / "football_fixture_predictions.xlsx"
-)
-
-OUTPUT_FILE = (
-    REPORTING_DIR
-    / "top_plays_report.xlsx"
-)
+from src.data.sqlite_store import create_indexes, read_sqlite_table, replace_sqlite_table
 
 
 # =========================================================
-# THRESHOLDS
+# SQLITE TOP PLAYS REPORT
 # =========================================================
 
-MIN_RESULT_CONFIDENCE_FOR_RESULT_PICK = 0.50
-MIN_PRIMARY_MARKET_CONFIDENCE = 0.70
-MIN_ELITE_MARKET_CONFIDENCE = 0.80
-MIN_ELITE_SIGNAL_COUNT = 3
+SOURCE_TABLE = "football_ensemble_predictions"
+TOP_PLAYS_TABLE = "football_top_plays"
+SUMMARY_TABLE = "football_top_plays_summary"
+LEAGUE_TABLE = "football_top_plays_by_league"
+MARKET_TABLE = "football_top_plays_by_market"
+RATING_TABLE = "football_top_plays_by_rating"
+NOTES_TABLE = "football_top_plays_notes"
 
-TOP_GRADES = [
-    "S Tier",
-    "A Tier",
-    "B Tier",
-]
-
-
-# =========================================================
-# HELPERS
-# =========================================================
-
-def ensure_directories():
-    REPORTING_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+DEFAULT_LIMIT = 500
 
 
-def safe_read_excel(path, sheet_name):
-    try:
-        return pd.read_excel(
-            path,
-            sheet_name=sheet_name,
-            engine="openpyxl"
-        )
-
-    except Exception as e:
-        print(f"Could not read file: {path}")
-        print(f"Error: {e}")
-
-        return pd.DataFrame()
+def now_string() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def safe_numeric(df, col):
-    if col in df.columns:
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
-
-    return df
-
-
-def get_value(row, col, default=0):
-    value = row.get(col, default)
-
+def safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if pd.isna(value):
             return default
-
         return float(value)
-
     except Exception:
         return default
 
 
-def clean_text(value):
-    if pd.isna(value):
-        return ""
-
-    return str(value).strip()
-
-
-def choose_primary_market(row):
-    result_probability = get_value(
-        row,
-        "PredictedResultProbability",
-        0
-    )
-
-    goals_probability = get_value(
-        row,
-        "BestGoalsProbability",
-        0
-    )
-
-    corners_probability = get_value(
-        row,
-        "BestCornersProbability",
-        0
-    )
-
-    predicted_result = clean_text(
-        row.get("PredictedResult")
-    )
-
-    best_goals_pick = clean_text(
-        row.get("BestGoalsPick")
-    )
-
-    best_corners_pick = clean_text(
-        row.get("BestCornersPick")
-    )
-
-    market_candidates = []
-
-    if predicted_result:
-        market_candidates.append(
-            {
-                "PrimaryMarket": "Result",
-                "PrimarySignal": predicted_result,
-                "PrimaryMarketProbability": result_probability,
-            }
-        )
-
-    if best_goals_pick:
-        market_candidates.append(
-            {
-                "PrimaryMarket": "Goals",
-                "PrimarySignal": best_goals_pick,
-                "PrimaryMarketProbability": goals_probability,
-            }
-        )
-
-    if best_corners_pick:
-        market_candidates.append(
-            {
-                "PrimaryMarket": "Corners",
-                "PrimarySignal": best_corners_pick,
-                "PrimaryMarketProbability": corners_probability,
-            }
-        )
-
-    if not market_candidates:
-        return pd.Series(
-            {
-                "PrimaryMarket": "Unknown",
-                "PrimarySignal": "-",
-                "PrimaryMarketProbability": 0,
-            }
-        )
-
-    best_market = max(
-        market_candidates,
-        key=lambda x: x["PrimaryMarketProbability"]
-    )
-
-    return pd.Series(best_market)
-
-
-def classify_result_quality(probability):
-    if probability >= 0.60:
-        return "Strong"
-
-    if probability >= 0.50:
-        return "Medium"
-
-    if probability >= 0.40:
-        return "Weak"
-
-    return "Low"
-
-
-def classify_market_quality(probability):
-    if probability >= 0.85:
-        return "Elite"
-
-    if probability >= 0.75:
-        return "Strong"
-
-    if probability >= 0.65:
-        return "Medium"
-
-    if probability >= 0.55:
-        return "Small"
-
-    return "Weak"
-
-
-def assign_clean_grade(row):
-    primary_probability = get_value(
-        row,
-        "PrimaryMarketProbability",
-        0
-    )
-
-    signal_count = get_value(
-        row,
-        "SignalCount",
-        0
-    )
-
-    result_probability = get_value(
-        row,
-        "PredictedResultProbability",
-        0
-    )
-
-    primary_market = clean_text(
-        row.get("PrimaryMarket")
-    )
-
-    if (
-        primary_probability >= 0.90
-        and signal_count >= 3
-    ):
-        return "S Tier"
-
-    if (
-        primary_probability >= 0.80
-        and signal_count >= 2
-    ):
-        return "A Tier"
-
-    if primary_probability >= 0.70:
-        return "B Tier"
-
-    if (
-        primary_market == "Result"
-        and result_probability >= 0.50
-    ):
-        return "C Tier"
-
-    return "Watchlist"
-
-
-def assign_clean_elite_flag(row):
-    primary_probability = get_value(
-        row,
-        "PrimaryMarketProbability",
-        0
-    )
-
-    signal_count = get_value(
-        row,
-        "SignalCount",
-        0
-    )
-
-    result_probability = get_value(
-        row,
-        "PredictedResultProbability",
-        0
-    )
-
-    primary_market = clean_text(
-        row.get("PrimaryMarket")
-    )
-
-    if primary_probability < MIN_ELITE_MARKET_CONFIDENCE:
-        return 0
-
-    if signal_count < MIN_ELITE_SIGNAL_COUNT:
-        return 0
-
-    if (
-        primary_market == "Result"
-        and result_probability < MIN_RESULT_CONFIDENCE_FOR_RESULT_PICK
-    ):
-        return 0
-
-    return 1
-
-
-def assign_display_signal(row):
-    primary_market = clean_text(
-        row.get("PrimaryMarket")
-    )
-
-    primary_signal = clean_text(
-        row.get("PrimarySignal")
-    )
-
-    if not primary_signal:
-        return "-"
-
-    return f"{primary_market}: {primary_signal}"
-
-
-def add_market_intelligence(df):
+def _clean(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
-        return df
+        return df.copy()
 
-    df = df.copy()
+    out = df.copy()
 
-    numeric_cols = [
-        "PredictedResultProbability",
-        "BestGoalsProbability",
-        "BestCornersProbability",
+    if "MatchDate" in out.columns:
+        out["MatchDate"] = pd.to_datetime(out["MatchDate"], errors="coerce")
+
+    if "GeneratedAt" in out.columns:
+        out["GeneratedAt"] = pd.to_datetime(out["GeneratedAt"], errors="coerce")
+
+    for col in [
+        "ModelProbability",
+        "ConfidenceScore",
         "EnsembleConfidenceScore",
-        "SignalCount",
+        "ValueScore",
+        "PredictionHit",
         "ElitePrediction",
-    ]
+    ]:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
 
-    for col in numeric_cols:
-        df = safe_numeric(
-            df,
-            col
-        )
+    if "EnsembleConfidenceScore" not in out.columns:
+        if "ConfidenceScore" in out.columns:
+            out["EnsembleConfidenceScore"] = out["ConfidenceScore"]
+        elif "ModelProbability" in out.columns:
+            out["EnsembleConfidenceScore"] = out["ModelProbability"]
+        else:
+            out["EnsembleConfidenceScore"] = 0
 
-    market_cols = df.apply(
-        choose_primary_market,
-        axis=1
+    if "ValueScore" not in out.columns:
+        out["ValueScore"] = out["EnsembleConfidenceScore"] * 100
+
+    return out
+
+
+def load_predictions() -> pd.DataFrame:
+    return _clean(read_sqlite_table(SOURCE_TABLE))
+
+
+def _summary_metric(metric: str, value: Any, detail: str) -> dict[str, Any]:
+    return {
+        "Metric": metric,
+        "Value": value,
+        "Detail": detail,
+        "UpdatedAt": now_string(),
+    }
+
+
+def build_top_plays(limit: int = DEFAULT_LIMIT) -> pd.DataFrame:
+    df = load_predictions()
+
+    if df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+
+    if "PrimaryMarketSignal" not in out.columns:
+        out["PrimaryMarketSignal"] = out.get("Market", "No Signal")
+
+    if "ConfidenceLabel" not in out.columns:
+        out["ConfidenceLabel"] = "Unrated"
+
+    if "Market" not in out.columns:
+        out["Market"] = "Unknown"
+
+    out["TopPlayScore"] = (
+        pd.to_numeric(out["EnsembleConfidenceScore"], errors="coerce").fillna(0) * 100
+    ).round(2)
+
+    out["RankReason"] = out.apply(
+        lambda row: f"{row.get('ConfidenceLabel', 'Signal')} signal at {safe_float(row.get('TopPlayScore'), 0):.2f}",
+        axis=1,
     )
 
-    df = pd.concat(
+    sort_cols = ["TopPlayScore"]
+    ascending = [False]
+
+    if "MatchDate" in out.columns:
+        sort_cols.append("MatchDate")
+        ascending.append(False)
+
+    out = out.sort_values(sort_cols, ascending=ascending).head(limit).copy()
+    out.insert(0, "TopPlayRank", range(1, len(out) + 1))
+    out["ReportGeneratedAt"] = now_string()
+
+    preferred = [
+        "TopPlayRank",
+        "MatchKey",
+        "MatchDate",
+        "League",
+        "Country",
+        "Tier",
+        "HomeTeam",
+        "AwayTeam",
+        "Market",
+        "PrimaryMarketSignal",
+        "PredictedResult",
+        "ModelProbability",
+        "ConfidenceScore",
+        "EnsembleConfidenceScore",
+        "ConfidenceLabel",
+        "ValueScore",
+        "ValueRating",
+        "TopPlayScore",
+        "RankReason",
+        "PredictionHit",
+        "GeneratedAt",
+        "ReportGeneratedAt",
+    ]
+
+    columns = [col for col in preferred if col in out.columns]
+    extras = [col for col in out.columns if col not in columns]
+    return out[columns + extras].reset_index(drop=True)
+
+
+def _group_summary(top_df: pd.DataFrame, group_col: str) -> pd.DataFrame:
+    if top_df.empty or group_col not in top_df.columns:
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+
+    for key, grp in top_df.groupby(group_col, dropna=False):
+        rows.append(
+            {
+                group_col: key,
+                "TopPlayCount": int(len(grp)),
+                "AverageTopPlayScore": round(float(pd.to_numeric(grp["TopPlayScore"], errors="coerce").mean()), 2),
+                "BestTopPlayScore": round(float(pd.to_numeric(grp["TopPlayScore"], errors="coerce").max()), 2),
+                "EliteCount": int((grp.get("ConfidenceLabel", pd.Series(dtype=str)).astype(str).str.lower() == "elite").sum()),
+                "UpdatedAt": now_string(),
+            }
+        )
+
+    out = pd.DataFrame(rows)
+    return out.sort_values(["TopPlayCount", "BestTopPlayScore"], ascending=[False, False]).reset_index(drop=True)
+
+
+def build_summary(top_df: pd.DataFrame) -> pd.DataFrame:
+    if top_df.empty:
+        return pd.DataFrame([_summary_metric("TopPlays", 0, "No top plays generated")])
+
+    return pd.DataFrame(
         [
-            df,
-            market_cols,
-        ],
-        axis=1
-    )
-
-    df["ResultQuality"] = df[
-        "PredictedResultProbability"
-    ].apply(
-        classify_result_quality
-    )
-
-    df["PrimaryMarketQuality"] = df[
-        "PrimaryMarketProbability"
-    ].apply(
-        classify_market_quality
-    )
-
-    df["CleanBettingGrade"] = df.apply(
-        assign_clean_grade,
-        axis=1
-    )
-
-    df["CleanElitePrediction"] = df.apply(
-        assign_clean_elite_flag,
-        axis=1
-    )
-
-    df["DisplaySignal"] = df.apply(
-        assign_display_signal,
-        axis=1
-    )
-
-    df["OriginalBettingGrade"] = df.get(
-        "BettingGrade",
-        None
-    )
-
-    df["OriginalElitePrediction"] = df.get(
-        "ElitePrediction",
-        None
-    )
-
-    df["BettingGrade"] = df["CleanBettingGrade"]
-    df["ElitePrediction"] = df["CleanElitePrediction"]
-
-    df["EnsembleConfidenceScore"] = df[
-        "PrimaryMarketProbability"
-    ]
-
-    df["EnsembleConfidenceLabel"] = df[
-        "PrimaryMarketQuality"
-    ]
-
-    return df
-
-
-def build_fixture_datetime(df):
-    if df.empty:
-        return df
-
-    df = df.copy()
-
-    if "FixtureDate" not in df.columns:
-        df["FixtureDateTime"] = pd.NaT
-        return df
-
-    if "KickoffTime" not in df.columns:
-        df["KickoffTime"] = "12:00"
-
-    df["FixtureDateTime"] = pd.to_datetime(
-        df["FixtureDate"].astype(str)
-        + " "
-        + df["KickoffTime"].fillna("12:00").astype(str),
-        errors="coerce"
-    )
-
-    return df
-
-
-def remove_past_fixtures(df):
-    if df.empty:
-        return df
-
-    df = build_fixture_datetime(df)
-
-    now = pd.Timestamp.now()
-
-    df = df[
-        df["FixtureDateTime"].notna()
-        & (df["FixtureDateTime"] >= now)
-    ].copy()
-
-    return df
-
-
-# =========================================================
-# TOP PLAYS
-# =========================================================
-
-def build_top_plays(fixtures_df):
-    if fixtures_df.empty:
-        return pd.DataFrame()
-
-    df = fixtures_df.copy()
-
-    df = remove_past_fixtures(df)
-
-    df = add_market_intelligence(df)
-
-    df = df[
-        df["PrimaryMarketProbability"] >= MIN_PRIMARY_MARKET_CONFIDENCE
-    ].copy()
-
-    df = df[
-        df["BettingGrade"].isin(TOP_GRADES)
-    ].copy()
-
-    df = df.sort_values(
-        by=[
-            "FixtureDateTime",
-            "BettingGrade",
-            "PrimaryMarketProbability",
-            "SignalCount",
-        ],
-        ascending=[
-            True,
-            True,
-            False,
-            False,
+            _summary_metric("TopPlays", int(len(top_df)), "Rows in football_top_plays"),
+            _summary_metric("Leagues", int(top_df["League"].nunique()) if "League" in top_df.columns else 0, "Distinct leagues in top plays"),
+            _summary_metric("Markets", int(top_df["Market"].nunique()) if "Market" in top_df.columns else 0, "Distinct markets in top plays"),
+            _summary_metric("AverageTopPlayScore", round(float(pd.to_numeric(top_df["TopPlayScore"], errors="coerce").mean()), 2), "Average top-play score"),
+            _summary_metric("BestTopPlayScore", round(float(pd.to_numeric(top_df["TopPlayScore"], errors="coerce").max()), 2), "Highest top-play score"),
         ]
-    ).reset_index(drop=True)
-
-    return df
-
-
-# =========================================================
-# SUMMARIES
-# =========================================================
-
-def build_summary(top_plays_df):
-    rows = [
-        {
-            "Metric": "Top Plays",
-            "Value": len(top_plays_df),
-        },
-        {
-            "Metric": "Generated At",
-            "Value": datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-        },
-    ]
-
-    if not top_plays_df.empty:
-        rows.extend(
-            [
-                {
-                    "Metric": "Leagues",
-                    "Value": top_plays_df["League"].nunique()
-                    if "League" in top_plays_df.columns
-                    else 0,
-                },
-                {
-                    "Metric": "Average Primary Market Confidence",
-                    "Value": round(
-                        pd.to_numeric(
-                            top_plays_df["PrimaryMarketProbability"],
-                            errors="coerce"
-                        ).mean(),
-                        3
-                    )
-                    if "PrimaryMarketProbability" in top_plays_df.columns
-                    else 0,
-                },
-                {
-                    "Metric": "Elite Picks",
-                    "Value": int(
-                        pd.to_numeric(
-                            top_plays_df["ElitePrediction"],
-                            errors="coerce"
-                        ).fillna(0).sum()
-                    )
-                    if "ElitePrediction" in top_plays_df.columns
-                    else 0,
-                },
-                {
-                    "Metric": "Best Grade",
-                    "Value": top_plays_df["BettingGrade"].min()
-                    if "BettingGrade" in top_plays_df.columns
-                    else "-",
-                },
-            ]
-        )
-
-    return pd.DataFrame(rows)
-
-
-def build_grade_summary(top_plays_df):
-    if top_plays_df.empty or "BettingGrade" not in top_plays_df.columns:
-        return pd.DataFrame()
-
-    return (
-        top_plays_df
-        .groupby("BettingGrade", dropna=False)
-        .agg(
-            Picks=("BettingGrade", "count"),
-            AvgPrimaryMarketConfidence=("PrimaryMarketProbability", "mean"),
-            AvgSignalCount=("SignalCount", "mean"),
-            ElitePicks=("ElitePrediction", "sum"),
-        )
-        .reset_index()
-        .round(3)
     )
 
 
-def build_league_summary(top_plays_df):
-    if top_plays_df.empty:
-        return pd.DataFrame()
-
-    return (
-        top_plays_df
-        .groupby(
-            [
-                "Tier",
-                "Country",
-                "League",
-            ],
-            dropna=False
-        )
-        .agg(
-            Picks=("League", "count"),
-            AvgPrimaryMarketConfidence=("PrimaryMarketProbability", "mean"),
-            AvgSignalCount=("SignalCount", "mean"),
-            ElitePicks=("ElitePrediction", "sum"),
-        )
-        .reset_index()
-        .round(3)
+def build_notes() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "NoteType": "Source",
+                "Note": "Top plays are ranked from football_ensemble_predictions in SQLite.",
+                "UpdatedAt": now_string(),
+            },
+            {
+                "NoteType": "Runtime",
+                "Note": "This report does not require Excel workbooks or local exported files.",
+                "UpdatedAt": now_string(),
+            },
+        ]
     )
 
 
-def build_market_summary(top_plays_df):
-    if top_plays_df.empty or "PrimaryMarket" not in top_plays_df.columns:
-        return pd.DataFrame()
+def export_top_plays_report(limit: int = DEFAULT_LIMIT) -> dict[str, int]:
+    top_df = build_top_plays(limit=limit)
 
-    return (
-        top_plays_df
-        .groupby("PrimaryMarket", dropna=False)
-        .agg(
-            Picks=("PrimaryMarket", "count"),
-            AvgConfidence=("PrimaryMarketProbability", "mean"),
-            ElitePicks=("ElitePrediction", "sum"),
-        )
-        .reset_index()
-        .round(3)
-    )
+    outputs = {
+        TOP_PLAYS_TABLE: top_df,
+        SUMMARY_TABLE: build_summary(top_df),
+        LEAGUE_TABLE: _group_summary(top_df, "League"),
+        MARKET_TABLE: _group_summary(top_df, "Market"),
+        RATING_TABLE: _group_summary(top_df, "ConfidenceLabel"),
+        NOTES_TABLE: build_notes(),
+    }
 
+    row_counts: dict[str, int] = {}
+    for table_name, df in outputs.items():
+        row_counts[table_name] = replace_sqlite_table(table_name, df)
 
-# =========================================================
-# EXPORT
-# =========================================================
+    create_indexes(TOP_PLAYS_TABLE, ["TopPlayRank", "MatchDate", "League", "Market", "ConfidenceLabel", "GeneratedAt"])
+    create_indexes(LEAGUE_TABLE, ["League", "UpdatedAt"])
+    create_indexes(MARKET_TABLE, ["Market", "UpdatedAt"])
+    create_indexes(RATING_TABLE, ["ConfidenceLabel", "UpdatedAt"])
 
-def export_top_plays_report():
-    ensure_directories()
+    print("\nSQLite top plays report tables refreshed.")
+    for table_name, rows in row_counts.items():
+        print(f"{table_name}: {rows}")
+    print("=" * 38)
 
-    fixtures_df = safe_read_excel(
-        FIXTURE_PREDICTIONS_FILE,
-        "Fixture_Predictions"
-    )
-
-    top_plays_df = build_top_plays(
-        fixtures_df
-    )
-
-    summary_df = build_summary(
-        top_plays_df
-    )
-
-    grade_summary_df = build_grade_summary(
-        top_plays_df
-    )
-
-    league_summary_df = build_league_summary(
-        top_plays_df
-    )
-
-    market_summary_df = build_market_summary(
-        top_plays_df
-    )
-
-    with pd.ExcelWriter(
-        OUTPUT_FILE,
-        engine="openpyxl",
-        mode="w"
-    ) as writer:
-
-        top_plays_df.to_excel(
-            writer,
-            sheet_name="Top_Plays",
-            index=False
-        )
-
-        summary_df.to_excel(
-            writer,
-            sheet_name="Summary",
-            index=False
-        )
-
-        grade_summary_df.to_excel(
-            writer,
-            sheet_name="Grade_Summary",
-            index=False
-        )
-
-        league_summary_df.to_excel(
-            writer,
-            sheet_name="League_Summary",
-            index=False
-        )
-
-        market_summary_df.to_excel(
-            writer,
-            sheet_name="Market_Summary",
-            index=False
-        )
-
-    print("\n======================================")
-    print("TOP PLAYS REPORT EXPORTED")
-    print("======================================")
-    print(f"Rows: {len(top_plays_df)}")
-    print(f"File: {OUTPUT_FILE}")
-    print("======================================\n")
-
-    return top_plays_df
+    return row_counts
 
 
-def main():
-    export_top_plays_report()
+def main() -> dict[str, int]:
+    print("=" * 38)
+    print("SQLITE FOOTBALL TOP PLAYS REPORT")
+    print("=" * 38)
+    return export_top_plays_report()
 
 
 if __name__ == "__main__":

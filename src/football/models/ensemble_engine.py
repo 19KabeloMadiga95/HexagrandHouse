@@ -1,737 +1,448 @@
-from pathlib import Path
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 
-
-# =========================================================
-# PROJECT PATHS
-# =========================================================
-
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-MODELS_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "models"
+from src.data.sqlite_store import (
+    create_indexes,
+    read_sqlite_table,
+    replace_sqlite_table,
+)
+from src.football.models.corners_model import export_corners_predictions
+from src.football.models.goals_model import export_goals_predictions
+from src.football.models.result_model import export_result_predictions
+from src.football.models.sqlite_football_model_engine import (
+    CORNERS_TABLE,
+    ENSEMBLE_TABLE,
+    GOALS_TABLE,
+    RESULT_TABLE,
+    RUNTIME_TABLE,
+    SUMMARY_TABLE,
+    clamp_probability,
+    confidence_label,
+    now_string,
+    safe_float,
+    write_summary,
 )
 
-OUTPUT_DIR = (
-    BASE_DIR
-    / "data"
-    / "football"
-    / "exports"
-    / "predictions"
-)
-
-GOALS_FILE = MODELS_DIR / "football_goals_model_predictions.xlsx"
-CORNERS_FILE = MODELS_DIR / "football_corners_model_predictions.xlsx"
-RESULT_FILE = MODELS_DIR / "football_result_model_predictions.xlsx"
-
-OUTPUT_FILE = OUTPUT_DIR / "football_ensemble_predictions.xlsx"
-
 
 # =========================================================
-# THRESHOLDS
+# ENSEMBLE CONFIG
 # =========================================================
 
-STRONG_SIGNAL_THRESHOLD = 0.70
-ELITE_SIGNAL_THRESHOLD = 0.85
-RESULT_CONFIDENCE_THRESHOLD = 0.55
+MODEL_NAME = "SQLite Football Ensemble"
+MODEL_VERSION = "football_ensemble_sqlite_v1"
 
 
 # =========================================================
 # HELPERS
 # =========================================================
 
-def ensure_directories():
-    OUTPUT_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
+def _ensure_model_tables() -> None:
+    if read_sqlite_table(RESULT_TABLE, limit=1).empty:
+        export_result_predictions()
+
+    if read_sqlite_table(GOALS_TABLE, limit=1).empty:
+        export_goals_predictions()
+
+    if read_sqlite_table(CORNERS_TABLE, limit=1).empty:
+        export_corners_predictions()
 
 
-def safe_read_excel(path, sheet_name):
-    try:
-        return pd.read_excel(
-            path,
-            sheet_name=sheet_name,
-            engine="openpyxl"
-        )
+def _prepare_table(table_name: str, prefix: str, keep_columns: list[str]) -> pd.DataFrame:
+    df = read_sqlite_table(table_name)
 
-    except Exception as e:
-        print(f"Could not read file: {path}")
-        print(f"Error: {e}")
-
+    if df.empty:
         return pd.DataFrame()
 
-
-def safe_numeric(df, col):
-    if col in df.columns:
-        df[col] = pd.to_numeric(
-            df[col],
-            errors="coerce"
-        )
-
-    return df
-
-
-def normalize_probability(value):
-    if pd.isna(value):
-        return None
-
-    try:
-        value = float(value)
-
-    except Exception:
-        return None
-
-    if value > 1:
-        value = value / 100
-
-    if value < 0:
-        return 0.0
-
-    if value > 1:
-        return 1.0
-
-    return round(value, 3)
-
-
-def confidence_label(probability):
-    if pd.isna(probability):
-        return "No Data"
-
-    if probability >= 0.85:
-        return "Elite"
-
-    if probability >= 0.75:
-        return "Strong"
-
-    if probability >= 0.65:
-        return "Medium"
-
-    if probability >= 0.55:
-        return "Small"
-
-    return "Weak"
-
-
-def add_match_key(df):
     df = df.copy()
 
-    df["MatchDate"] = pd.to_datetime(
-        df["MatchDate"],
-        errors="coerce"
-    )
+    if "MatchKey" not in df.columns:
+        return pd.DataFrame()
 
-    df["MatchDateKey"] = df["MatchDate"].dt.strftime(
-        "%Y-%m-%d"
-    )
+    columns = ["MatchKey"] + [col for col in keep_columns if col in df.columns]
+    df = df[columns].copy()
 
-    df["MatchKey"] = (
-        df["LeagueCode"].astype(str)
-        + "_"
-        + df["MatchDateKey"].astype(str)
-        + "_"
-        + df["HomeTeam"].astype(str)
-        + "_"
-        + df["AwayTeam"].astype(str)
-    )
+    rename_map = {
+        col: f"{prefix}{col}"
+        for col in columns
+        if col != "MatchKey"
+    }
 
-    return df
+    return df.rename(columns=rename_map)
 
 
-def best_probability_pick(row, pick_map):
-    best_pick = None
-    best_probability = None
+def _clean_base(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
 
-    for pick_name, probability_col in pick_map.items():
-        value = row.get(
-            probability_col,
-            None
-        )
+    out = df.copy()
 
-        if pd.isna(value):
-            continue
+    if "MatchDate" in out.columns:
+        out["MatchDate"] = pd.to_datetime(out["MatchDate"], errors="coerce")
 
-        try:
-            value = float(value)
-
-        except Exception:
-            continue
-
-        if best_probability is None or value > best_probability:
-            best_probability = value
-            best_pick = pick_name
-
-    if best_pick is None:
-        return "No Data", None
-
-    return best_pick, round(best_probability, 3)
+    return out
 
 
-# =========================================================
-# PRIMARY MARKET ENGINE
-# =========================================================
+def _actual_hit(row: pd.Series, market: str, signal: str, predicted_result: str | None) -> int | None:
+    if market == "Result":
+        actual = row.get("Result")
+        if actual is None or pd.isna(actual):
+            return None
+        return int(str(actual) == str(predicted_result))
 
-def determine_primary_market(row):
-    result_probability = row.get(
-        "PredictedResultProbability",
-        0
-    )
+    if signal == "Over 1.5 Goals":
+        total = safe_float(row.get("TotalGoals"), -1)
+        return None if total < 0 else int(total > 1.5)
 
-    goals_probability = row.get(
-        "BestGoalsProbability",
-        0
-    )
+    if signal == "Over 2.5 Goals":
+        total = safe_float(row.get("TotalGoals"), -1)
+        return None if total < 0 else int(total > 2.5)
 
-    corners_probability = row.get(
-        "BestCornersProbability",
-        0
-    )
+    if signal == "Over 3.5 Goals":
+        total = safe_float(row.get("TotalGoals"), -1)
+        return None if total < 0 else int(total > 3.5)
 
-    candidates = []
+    if signal == "BTTS Yes":
+        home = safe_float(row.get("HomeGoals"), -1)
+        away = safe_float(row.get("AwayGoals"), -1)
+        return None if home < 0 or away < 0 else int(home > 0 and away > 0)
 
-    if not pd.isna(result_probability):
-        candidates.append(
-            {
-                "Market": "Result",
-                "Signal": row.get(
-                    "PredictedResult",
-                    "-"
-                ),
-                "Probability": result_probability,
-            }
-        )
+    if signal == "Over 8.5 Corners":
+        total = safe_float(row.get("TotalCorners"), -1)
+        return None if total < 0 else int(total > 8.5)
 
-    if not pd.isna(goals_probability):
-        candidates.append(
-            {
-                "Market": "Goals",
-                "Signal": row.get(
-                    "BestGoalsPick",
-                    "-"
-                ),
-                "Probability": goals_probability,
-            }
-        )
+    if signal == "Over 9.5 Corners":
+        total = safe_float(row.get("TotalCorners"), -1)
+        return None if total < 0 else int(total > 9.5)
 
-    if not pd.isna(corners_probability):
-        candidates.append(
-            {
-                "Market": "Corners",
-                "Signal": row.get(
-                    "BestCornersPick",
-                    "-"
-                ),
-                "Probability": corners_probability,
-            }
-        )
+    if signal == "Over 10.5 Corners":
+        total = safe_float(row.get("TotalCorners"), -1)
+        return None if total < 0 else int(total > 10.5)
 
-    if not candidates:
-        return pd.Series(
-            {
-                "PrimaryMarket": "Unknown",
-                "PrimarySignal": "-",
-                "PrimaryMarketProbability": None,
-            }
-        )
+    return None
 
-    best_market = max(
-        candidates,
-        key=lambda item: item["Probability"]
-    )
 
-    return pd.Series(
+def _pick_primary_signal(row: pd.Series) -> dict[str, Any]:
+    candidates = [
         {
-            "PrimaryMarket": best_market["Market"],
-            "PrimarySignal": best_market["Signal"],
-            "PrimaryMarketProbability": round(
-                best_market["Probability"],
-                3
-            ),
+            "Market": "Result",
+            "PrimaryMarketSignal": row.get("Result_PredictedResultLabel"),
+            "PredictedResult": row.get("Result_PredictedResult"),
+            "ModelProbability": row.get("Result_ModelProbability"),
+            "SourceModel": "Result",
+        },
+        {
+            "Market": "Goals",
+            "PrimaryMarketSignal": row.get("Goals_PrimaryMarketSignal"),
+            "PredictedResult": None,
+            "ModelProbability": row.get("Goals_ModelProbability"),
+            "SourceModel": "Goals",
+        },
+        {
+            "Market": "Corners",
+            "PrimaryMarketSignal": row.get("Corners_PrimaryMarketSignal"),
+            "PredictedResult": None,
+            "ModelProbability": row.get("Corners_ModelProbability"),
+            "SourceModel": "Corners",
+        },
+    ]
+
+    valid_candidates = []
+
+    for candidate in candidates:
+        probability = clamp_probability(candidate.get("ModelProbability"), 0.0)
+        signal = candidate.get("PrimaryMarketSignal")
+
+        if not signal or pd.isna(signal):
+            continue
+
+        candidate["ModelProbability"] = probability
+        valid_candidates.append(candidate)
+
+    if not valid_candidates:
+        return {
+            "Market": "Unknown",
+            "PrimaryMarketSignal": "No Signal",
+            "PredictedResult": None,
+            "ModelProbability": 0.0,
+            "SourceModel": "None",
         }
-    )
+
+    return max(valid_candidates, key=lambda item: item["ModelProbability"])
+
+
+def _make_summary(ensemble_df: pd.DataFrame) -> list[dict[str, Any]]:
+    if ensemble_df.empty:
+        return [
+            {
+                "Metric": "Rows",
+                "Value": 0,
+            }
+        ]
+
+    hit_rate = None
+    if "PredictionHit" in ensemble_df.columns:
+        hit_series = pd.to_numeric(ensemble_df["PredictionHit"], errors="coerce")
+        if hit_series.notna().any():
+            hit_rate = round(float(hit_series.mean()), 4)
+
+    return [
+        {
+            "Metric": "Rows",
+            "Value": int(len(ensemble_df)),
+        },
+        {
+            "Metric": "Leagues",
+            "Value": int(ensemble_df["League"].nunique()) if "League" in ensemble_df.columns else 0,
+        },
+        {
+            "Metric": "AverageConfidence",
+            "Value": round(float(pd.to_numeric(ensemble_df["EnsembleConfidenceScore"], errors="coerce").mean()), 4)
+            if "EnsembleConfidenceScore" in ensemble_df.columns
+            else 0,
+        },
+        {
+            "Metric": "EliteSignals",
+            "Value": int(pd.to_numeric(ensemble_df.get("ElitePrediction", 0), errors="coerce").fillna(0).sum()),
+        },
+        {
+            "Metric": "HistoricalHitRate",
+            "Value": hit_rate,
+        },
+    ]
 
 
 # =========================================================
-# MARKET-AWARE ENSEMBLE SCORE
+# ENSEMBLE BUILD
 # =========================================================
 
-def calculate_market_aware_score(row):
-    result_prob = row.get(
-        "PredictedResultProbability",
-        None
-    )
+def build_football_ensemble_predictions() -> pd.DataFrame:
+    _ensure_model_tables()
 
-    goals_prob = row.get(
-        "BestGoalsProbability",
-        None
-    )
+    result_df = read_sqlite_table(RESULT_TABLE)
 
-    corners_prob = row.get(
-        "BestCornersProbability",
-        None
-    )
+    if result_df.empty:
+        return pd.DataFrame()
 
-    available_probs = []
-
-    for value in [
-        result_prob,
-        goals_prob,
-        corners_prob,
-    ]:
-        if not pd.isna(value):
-            available_probs.append(value)
-
-    if not available_probs:
-        return None
-
-    primary_market_probability = max(
-        available_probs
-    )
-
-    signal_bonus = (
-        row.get("SignalCount", 0) * 0.02
-    )
-
-    result_penalty = 0
-
-    if (
-        not pd.isna(result_prob)
-        and result_prob < 0.45
-    ):
-        result_penalty = 0.05
-
-    final_score = (
-        primary_market_probability
-        + signal_bonus
-        - result_penalty
-    )
-
-    if final_score > 1:
-        final_score = 1
-
-    if final_score < 0:
-        final_score = 0
-
-    return round(final_score, 3)
-
-
-# =========================================================
-# BETTING GRADE ENGINE
-# =========================================================
-
-def determine_betting_grade(row):
-    primary_probability = row.get(
-        "PrimaryMarketProbability",
-        0
-    )
-
-    signal_count = row.get(
-        "SignalCount",
-        0
-    )
-
-    result_probability = row.get(
-        "PredictedResultProbability",
-        0
-    )
-
-    if (
-        primary_probability >= 0.90
-        and signal_count >= 3
-    ):
-        return "S Tier"
-
-    if (
-        primary_probability >= 0.82
-        and signal_count >= 2
-    ):
-        return "A Tier"
-
-    if primary_probability >= 0.72:
-        return "B Tier"
-
-    if (
-        result_probability >= RESULT_CONFIDENCE_THRESHOLD
-    ):
-        return "C Tier"
-
-    return "Watchlist"
-
-
-def determine_elite_flag(row):
-    primary_probability = row.get(
-        "PrimaryMarketProbability",
-        0
-    )
-
-    signal_count = row.get(
-        "SignalCount",
-        0
-    )
-
-    if (
-        primary_probability >= ELITE_SIGNAL_THRESHOLD
-        and signal_count >= 3
-    ):
-        return 1
-
-    return 0
-
-
-# =========================================================
-# LOAD MODEL OUTPUTS
-# =========================================================
-
-def load_goals_model():
-    return safe_read_excel(
-        GOALS_FILE,
-        "Goals_Model_Predictions"
-    )
-
-
-def load_corners_model():
-    return safe_read_excel(
-        CORNERS_FILE,
-        "Corners_Model_Predictions"
-    )
-
-
-def load_result_model():
-    return safe_read_excel(
-        RESULT_FILE,
-        "Result_Model_Predictions"
-    )
-
-
-# =========================================================
-# BUILD ENSEMBLE
-# =========================================================
-
-def build_ensemble_predictions(
-    goals_df,
-    corners_df,
-    result_df
-):
-    goals_df = add_match_key(
-        goals_df
-    )
-
-    corners_df = add_match_key(
-        corners_df
-    )
-
-    result_df = add_match_key(
-        result_df
-    )
-
-    ensemble_df = result_df.copy()
-
-    goals_cols = [
+    base_columns = [
         "MatchKey",
-        "ExpectedTotalGoals",
-        "Over15Probability",
-        "Over25Probability",
-        "Over35Probability",
-        "BTTSProbability",
+        "MatchDate",
+        "Season",
+        "SeasonCode",
+        "LeagueCode",
+        "League",
+        "Country",
+        "Tier",
+        "HomeTeam",
+        "AwayTeam",
+        "HomeGoals",
+        "AwayGoals",
+        "TotalGoals",
+        "HomeCorners",
+        "AwayCorners",
+        "TotalCorners",
+        "Result",
+        "ResultLabel",
+        "BTTS",
+        "Over25Goals",
+        "Over95Corners",
     ]
 
-    corners_cols = [
-        "MatchKey",
-        "ExpectedTotalCorners",
-        "Over75CornersProbability",
-        "Over85CornersProbability",
-        "Over95CornersProbability",
-        "Over105CornersProbability",
-    ]
+    base = result_df[[col for col in base_columns if col in result_df.columns]].copy()
+    base = _clean_base(base)
 
-    goals_cols = [
-        col for col in goals_cols
-        if col in goals_df.columns
-    ]
-
-    corners_cols = [
-        col for col in corners_cols
-        if col in corners_df.columns
-    ]
-
-    ensemble_df = ensemble_df.merge(
-        goals_df[goals_cols],
-        on="MatchKey",
-        how="left"
-    )
-
-    ensemble_df = ensemble_df.merge(
-        corners_df[corners_cols],
-        on="MatchKey",
-        how="left"
-    )
-
-    probability_cols = [
+    result_keep = [
+        "PrimaryMarketSignal",
+        "PredictedResult",
+        "PredictedResultLabel",
         "HomeWinProbability",
         "DrawProbability",
         "AwayWinProbability",
         "PredictedResultProbability",
-        "Over15Probability",
-        "Over25Probability",
-        "Over35Probability",
+        "ModelProbability",
+        "ConfidenceLabel",
+    ]
+
+    goals_keep = [
+        "PrimaryMarketSignal",
+        "GoalsSignal",
+        "HomeExpectedGoals",
+        "AwayExpectedGoals",
+        "ExpectedTotalGoals",
+        "Over15GoalsProbability",
+        "Over25GoalsProbability",
+        "Over35GoalsProbability",
         "BTTSProbability",
-        "Over75CornersProbability",
+        "ModelProbability",
+        "ConfidenceLabel",
+    ]
+
+    corners_keep = [
+        "PrimaryMarketSignal",
+        "CornersSignal",
+        "HomeExpectedCorners",
+        "AwayExpectedCorners",
+        "ExpectedTotalCorners",
         "Over85CornersProbability",
         "Over95CornersProbability",
         "Over105CornersProbability",
+        "ModelProbability",
+        "ConfidenceLabel",
     ]
 
-    for col in probability_cols:
-        if col in ensemble_df.columns:
-            ensemble_df[col] = ensemble_df[col].apply(
-                normalize_probability
-            )
+    result_model = _prepare_table(RESULT_TABLE, "Result_", result_keep)
+    goals_model = _prepare_table(GOALS_TABLE, "Goals_", goals_keep)
+    corners_model = _prepare_table(CORNERS_TABLE, "Corners_", corners_keep)
 
-    goals_pick_map = {
-        "Over 1.5 Goals": "Over15Probability",
-        "Over 2.5 Goals": "Over25Probability",
-        "Over 3.5 Goals": "Over35Probability",
-        "BTTS": "BTTSProbability",
-    }
+    ensemble = base.copy()
 
-    corners_pick_map = {
-        "Over 7.5 Corners": "Over75CornersProbability",
-        "Over 8.5 Corners": "Over85CornersProbability",
-        "Over 9.5 Corners": "Over95CornersProbability",
-        "Over 10.5 Corners": "Over105CornersProbability",
-    }
+    for model_df in [result_model, goals_model, corners_model]:
+        if not model_df.empty:
+            ensemble = ensemble.merge(model_df, on="MatchKey", how="left")
 
-    best_goals = ensemble_df.apply(
-        lambda row: best_probability_pick(
-            row,
-            goals_pick_map
-        ),
-        axis=1
-    )
+    generated_at = now_string()
+    rows: list[dict[str, Any]] = []
 
-    best_corners = ensemble_df.apply(
-        lambda row: best_probability_pick(
-            row,
-            corners_pick_map
-        ),
-        axis=1
-    )
+    for _, row in ensemble.iterrows():
+        pick = _pick_primary_signal(row)
+        probability = clamp_probability(pick.get("ModelProbability"), 0.0)
+        label = confidence_label(probability)
+        signal = str(pick.get("PrimaryMarketSignal", "No Signal"))
+        market = str(pick.get("Market", "Unknown"))
+        predicted_result = pick.get("PredictedResult")
+        prediction_hit = _actual_hit(row, market, signal, predicted_result)
 
-    ensemble_df["BestGoalsPick"] = [
-        item[0] for item in best_goals
-    ]
+        output = row.to_dict()
+        output.update(
+            {
+                "ModelName": MODEL_NAME,
+                "ModelVersion": MODEL_VERSION,
+                "SourceModel": pick.get("SourceModel"),
+                "Market": market,
+                "PrimaryMarketSignal": signal,
+                "PredictedResult": predicted_result,
+                "ModelProbability": probability,
+                "ConfidenceScore": probability,
+                "EnsembleConfidenceScore": probability,
+                "ConfidenceLabel": label,
+                "SignalLabel": label,
+                "ElitePrediction": 1 if probability >= 0.85 else 0,
+                "ValueScore": round(probability * 100, 2),
+                "ValueRating": label,
+                "PredictionHit": prediction_hit,
+                "GeneratedAt": generated_at,
+            }
+        )
+        rows.append(output)
 
-    ensemble_df["BestGoalsProbability"] = [
-        item[1] for item in best_goals
-    ]
+    out = pd.DataFrame(rows)
 
-    ensemble_df["BestCornersPick"] = [
-        item[0] for item in best_corners
-    ]
-
-    ensemble_df["BestCornersProbability"] = [
-        item[1] for item in best_corners
-    ]
-
-    ensemble_df["StrongResultSignal"] = (
-        ensemble_df["PredictedResultProbability"].fillna(0)
-        >= STRONG_SIGNAL_THRESHOLD
-    ).astype(int)
-
-    ensemble_df["StrongGoalsSignal"] = (
-        ensemble_df["BestGoalsProbability"].fillna(0)
-        >= STRONG_SIGNAL_THRESHOLD
-    ).astype(int)
-
-    ensemble_df["StrongCornersSignal"] = (
-        ensemble_df["BestCornersProbability"].fillna(0)
-        >= STRONG_SIGNAL_THRESHOLD
-    ).astype(int)
-
-    ensemble_df["SignalCount"] = (
-        ensemble_df["StrongResultSignal"]
-        + ensemble_df["StrongGoalsSignal"]
-        + ensemble_df["StrongCornersSignal"]
-    )
-
-    primary_market_df = ensemble_df.apply(
-        determine_primary_market,
-        axis=1
-    )
-
-    ensemble_df = pd.concat(
-        [
-            ensemble_df,
-            primary_market_df,
-        ],
-        axis=1
-    )
-
-    ensemble_df["EnsembleConfidenceScore"] = ensemble_df.apply(
-        calculate_market_aware_score,
-        axis=1
-    )
-
-    ensemble_df["EnsembleConfidenceLabel"] = ensemble_df[
-        "EnsembleConfidenceScore"
-    ].apply(
-        confidence_label
-    )
-
-    ensemble_df["BettingGrade"] = ensemble_df.apply(
-        determine_betting_grade,
-        axis=1
-    )
-
-    ensemble_df["ElitePrediction"] = ensemble_df.apply(
-        determine_elite_flag,
-        axis=1
-    )
-
-    ensemble_df["PredictionPack"] = (
-        ensemble_df["PrimaryMarket"].astype(str)
-        + ": "
-        + ensemble_df["PrimarySignal"].astype(str)
-    )
-
-    ensemble_df["GeneratedAt"] = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    ensemble_df = ensemble_df.sort_values(
-        by=[
-            "MatchDate",
-            "PrimaryMarketProbability",
-        ],
-        ascending=[
-            False,
-            False,
-        ]
-    ).reset_index(drop=True)
-
-    return ensemble_df
-
-
-# =========================================================
-# SUMMARIES
-# =========================================================
-
-def build_summary(ensemble_df):
-    if ensemble_df.empty:
-        return pd.DataFrame()
-
-    rows = [
-        {
-            "Metric": "Rows",
-            "Value": len(ensemble_df),
-        },
-        {
-            "Metric": "Elite Predictions",
-            "Value": int(
-                ensemble_df["ElitePrediction"].sum()
-            ),
-        },
-        {
-            "Metric": "Average Primary Market Probability",
-            "Value": round(
-                ensemble_df["PrimaryMarketProbability"].mean(),
-                3
-            ),
-        },
-        {
-            "Metric": "Average Ensemble Confidence",
-            "Value": round(
-                ensemble_df["EnsembleConfidenceScore"].mean(),
-                3
-            ),
-        },
-        {
-            "Metric": "Generated At",
-            "Value": datetime.now().strftime(
-                "%Y-%m-%d %H:%M:%S"
-            ),
-        },
-    ]
-
-    return pd.DataFrame(rows)
-
-
-# =========================================================
-# EXPORT
-# =========================================================
-
-def export_ensemble_engine():
-    ensure_directories()
-
-    goals_df = load_goals_model()
-    corners_df = load_corners_model()
-    result_df = load_result_model()
-
-    if goals_df.empty or result_df.empty:
-        print("Goals or result model file is missing.")
-        return pd.DataFrame()
-
-    ensemble_df = build_ensemble_predictions(
-        goals_df=goals_df,
-        corners_df=corners_df,
-        result_df=result_df
-    )
-
-    summary_df = build_summary(
-        ensemble_df
-    )
-
-    elite_df = ensemble_df[
-        ensemble_df["ElitePrediction"] == 1
-    ].copy()
-
-    with pd.ExcelWriter(
-        OUTPUT_FILE,
-        engine="openpyxl",
-        mode="w"
-    ) as writer:
-
-        ensemble_df.to_excel(
-            writer,
-            sheet_name="Ensemble_Predictions",
-            index=False
+    if "MatchDate" in out.columns:
+        out["MatchDate"] = pd.to_datetime(out["MatchDate"], errors="coerce")
+        out = out.sort_values(
+            by=["MatchDate", "EnsembleConfidenceScore"],
+            ascending=[False, False],
         )
 
-        elite_df.to_excel(
-            writer,
-            sheet_name="Elite_Predictions",
-            index=False
+    preferred_columns = [
+        "MatchKey",
+        "MatchDate",
+        "Season",
+        "SeasonCode",
+        "LeagueCode",
+        "League",
+        "Country",
+        "Tier",
+        "HomeTeam",
+        "AwayTeam",
+        "HomeGoals",
+        "AwayGoals",
+        "TotalGoals",
+        "HomeCorners",
+        "AwayCorners",
+        "TotalCorners",
+        "Result",
+        "ResultLabel",
+        "ModelName",
+        "ModelVersion",
+        "SourceModel",
+        "Market",
+        "PrimaryMarketSignal",
+        "PredictedResult",
+        "ModelProbability",
+        "ConfidenceScore",
+        "EnsembleConfidenceScore",
+        "ConfidenceLabel",
+        "SignalLabel",
+        "ElitePrediction",
+        "ValueScore",
+        "ValueRating",
+        "PredictionHit",
+        "GeneratedAt",
+        "Result_PrimaryMarketSignal",
+        "Result_PredictedResult",
+        "Result_HomeWinProbability",
+        "Result_DrawProbability",
+        "Result_AwayWinProbability",
+        "Goals_PrimaryMarketSignal",
+        "Goals_ExpectedTotalGoals",
+        "Goals_Over15GoalsProbability",
+        "Goals_Over25GoalsProbability",
+        "Goals_BTTSProbability",
+        "Corners_PrimaryMarketSignal",
+        "Corners_ExpectedTotalCorners",
+        "Corners_Over85CornersProbability",
+        "Corners_Over95CornersProbability",
+    ]
+
+    columns = [col for col in preferred_columns if col in out.columns]
+    extra_columns = [col for col in out.columns if col not in columns]
+
+    return out[columns + extra_columns].reset_index(drop=True)
+
+
+def export_football_ensemble_predictions() -> pd.DataFrame:
+    ensemble = build_football_ensemble_predictions()
+
+    ensemble_rows = replace_sqlite_table(ENSEMBLE_TABLE, ensemble)
+    runtime_rows = replace_sqlite_table(RUNTIME_TABLE, ensemble)
+
+    for table in [ENSEMBLE_TABLE, RUNTIME_TABLE]:
+        create_indexes(
+            table,
+            [
+                "MatchKey",
+                "MatchDate",
+                "League",
+                "LeagueCode",
+                "HomeTeam",
+                "AwayTeam",
+                "Market",
+                "ConfidenceLabel",
+                "GeneratedAt",
+            ],
         )
 
-        summary_df.to_excel(
-            writer,
-            sheet_name="Summary",
-            index=False
-        )
+    write_summary(_make_summary(ensemble))
 
-    print("\n======================================")
-    print("FOOTBALL ENSEMBLE ENGINE EXPORTED")
-    print("======================================")
-    print(f"Rows: {len(ensemble_df)}")
-    print(f"Elite predictions: {len(elite_df)}")
-    print(f"File: {OUTPUT_FILE}")
-    print("======================================\n")
+    print("\nSQLite football ensemble refreshed.")
+    print(f"Table: {ENSEMBLE_TABLE}")
+    print(f"Rows : {ensemble_rows}")
+    print(f"Runtime table refreshed: {RUNTIME_TABLE}")
+    print(f"Rows : {runtime_rows}")
 
-    return ensemble_df
+    return ensemble
 
 
-# =========================================================
-# CLI
-# =========================================================
-
-def main():
-    export_ensemble_engine()
+def main() -> None:
+    print("=" * 38)
+    print("SQLITE FOOTBALL ENSEMBLE ENGINE")
+    print("=" * 38)
+    export_football_ensemble_predictions()
+    print("=" * 38)
 
 
 if __name__ == "__main__":

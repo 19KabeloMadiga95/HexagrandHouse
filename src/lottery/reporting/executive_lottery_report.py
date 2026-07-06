@@ -1,567 +1,332 @@
-from pathlib import Path
+from __future__ import annotations
+
 from datetime import datetime
 
 import pandas as pd
 
-
-# =========================================================
-# PROJECT PATHS
-# =========================================================
-
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-MASTER_FILE = (
-    BASE_DIR
-    / "data"
-    / "master"
-    / "lottery_historical_master.xlsx"
-)
-
-QUALITY_FILE = (
-    BASE_DIR
-    / "data"
-    / "processed"
-    / "quality"
-    / "lottery_quality_report.xlsx"
-)
-
-BACKTEST_DIR = (
-    BASE_DIR
-    / "data"
-    / "exports"
-    / "backtesting"
-)
-
-FINAL_PREDICTIONS_DIR = (
-    BASE_DIR
-    / "data"
-    / "exports"
-    / "final_predictions"
-)
-
-REPORTING_DIR = (
-    BASE_DIR
-    / "data"
-    / "exports"
-    / "reporting"
-)
-
-OUTPUT_FILE = (
-    REPORTING_DIR
-    / "executive_lottery_report.xlsx"
-)
-
-UNIFIED_DASHBOARD_FILE = (
-    BACKTEST_DIR
-    / "unified_model_performance_dashboard.xlsx"
-)
-
-ALL_ENSEMBLE_FILE = (
-    FINAL_PREDICTIONS_DIR
-    / "all_games_ensemble_predictions.xlsx"
+from src.data.database import get_database_summary, table_exists
+from src.data.sqlite_store import create_indexes, read_sqlite_table, replace_sqlite_table
+from src.lottery.reporting.daily_lottery_summary_generator import (
+    build_latest_results as build_daily_latest_results,
+    build_top_predictions,
+    load_base_predictions,
+    load_master_data,
 )
 
 
 # =========================================================
-# HELPERS
+# SQLITE-FIRST EXECUTIVE LOTTERY REPORT
 # =========================================================
 
-def safe_read_excel(
-    path,
-    sheet_name=0
-):
-    if not path.exists():
+EXECUTIVE_SUMMARY_TABLE = "lottery_executive_summary"
+EXECUTIVE_LATEST_RESULTS_TABLE = "lottery_executive_latest_results"
+EXECUTIVE_COVERAGE_TABLE = "lottery_executive_coverage_summary"
+EXECUTIVE_PLATFORM_STATUS_TABLE = "lottery_executive_platform_status"
+EXECUTIVE_STATISTICS_TABLE = "lottery_executive_statistical_insights"
+EXECUTIVE_TOP_SIGNALS_TABLE = "lottery_executive_top_signals"
+
+
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _safe_df(table_name: str) -> pd.DataFrame:
+    if not table_exists(table_name):
         return pd.DataFrame()
+    return read_sqlite_table(table_name)
 
-    try:
-        return pd.read_excel(
-            path,
-            sheet_name=sheet_name,
-            engine="openpyxl"
-        )
 
-    except Exception:
+def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None:
         return pd.DataFrame()
+    return df.copy().dropna(how="all").reset_index(drop=True)
 
 
-def clean_dataframe(df):
-    if df.empty:
-        return df
-
-    df = df.copy()
-
-    for col in df.columns:
-        if df[col].dtype == "object":
-            df[col] = df[col].astype(str)
-
-    return df
+# Backward-compatible loader names.
+def load_unified_leaderboard() -> pd.DataFrame:
+    return _safe_df("lottery_model_leaderboard")
 
 
-# =========================================================
-# LOADERS
-# =========================================================
-
-def load_master_data():
-    df = safe_read_excel(
-        MASTER_FILE
-    )
-
-    if df.empty:
-        return df
-
-    df["DrawDate"] = pd.to_datetime(
-        df["DrawDate"],
-        errors="coerce"
-    )
-
-    return df
+def load_best_by_game() -> pd.DataFrame:
+    return _safe_df("lottery_model_best_by_game")
 
 
-def load_unified_leaderboard():
-    return clean_dataframe(
-        safe_read_excel(
-            UNIFIED_DASHBOARD_FILE,
-            "Unified_Leaderboard"
-        )
-    )
+def load_vs_random() -> pd.DataFrame:
+    return _safe_df("lottery_model_vs_random")
 
 
-def load_best_by_game():
-    return clean_dataframe(
-        safe_read_excel(
-            UNIFIED_DASHBOARD_FILE,
-            "Best_By_Game"
-        )
-    )
+def load_game_summary() -> pd.DataFrame:
+    return _safe_df("lottery_model_game_summary")
 
 
-def load_vs_random():
-    return clean_dataframe(
-        safe_read_excel(
-            UNIFIED_DASHBOARD_FILE,
-            "Vs_Random"
-        )
-    )
-
-
-def load_game_summary():
-    return clean_dataframe(
-        safe_read_excel(
-            UNIFIED_DASHBOARD_FILE,
-            "Game_Summary"
-        )
-    )
-
-
-def load_final_ensembles():
-    return clean_dataframe(
-        safe_read_excel(
-            ALL_ENSEMBLE_FILE,
-            "All_Ensemble_Predictions"
-        )
-    )
+def load_final_ensembles() -> pd.DataFrame:
+    return load_base_predictions()
 
 
 # =========================================================
-# REPORT TABLES
+# BUILDERS
 # =========================================================
+
 
 def build_executive_summary(
-    master_df,
-    leaderboard_df,
-    ensemble_df
-):
-    rows = []
+    master_df: pd.DataFrame | None = None,
+    predictions_df: pd.DataFrame | None = None,
+    leaderboard_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    history = load_master_data() if master_df is None else master_df.copy()
+    predictions = load_base_predictions() if predictions_df is None else predictions_df.copy()
+    leaderboard = load_unified_leaderboard() if leaderboard_df is None else leaderboard_df.copy()
 
-    rows.append({
-        "Metric": "Report Generated At",
-        "Value": datetime.now().strftime(
-            "%Y-%m-%d %H:%M:%S"
-        ),
-    })
+    avg_conf = round(float(predictions["ConfidenceScore"].mean()), 2) if not predictions.empty and "ConfidenceScore" in predictions.columns else 0
+    best_conf = round(float(predictions["ConfidenceScore"].max()), 2) if not predictions.empty and "ConfidenceScore" in predictions.columns else 0
 
-    rows.append({
-        "Metric": "Platform Phase",
-        "Value": "Phase 1 Complete",
-    })
-
-    rows.append({
-        "Metric": "Historical Records",
-        "Value": len(master_df),
-    })
-
-    rows.append({
-        "Metric": "Games Covered",
-        "Value": (
-            master_df["GameFamily"].nunique()
-            if not master_df.empty and "GameFamily" in master_df.columns
-            else 0
-        ),
-    })
-
-    rows.append({
-        "Metric": "Latest Draw Date",
-        "Value": (
-            str(master_df["DrawDate"].max().date())
-            if not master_df.empty and "DrawDate" in master_df.columns
-            else "-"
-        ),
-    })
-
-    rows.append({
-        "Metric": "Unified Models Compared",
-        "Value": len(leaderboard_df),
-    })
-
-    if not leaderboard_df.empty:
-        rows.append({
-            "Metric": "Best Overall Game",
-            "Value": leaderboard_df.iloc[0].get(
-                "GameFamily",
-                "-"
-            ),
-        })
-
-        rows.append({
-            "Metric": "Best Overall Model",
-            "Value": leaderboard_df.iloc[0].get(
-                "ModelName",
-                "-"
-            ),
-        })
-
-        rows.append({
-            "Metric": "Best Avg Regular Match / Draw",
-            "Value": leaderboard_df.iloc[0].get(
-                "AverageBestRegularMatch_PerDraw",
-                "-"
-            ),
-        })
-
-    rows.append({
-        "Metric": "Final Ensemble Rows",
-        "Value": len(ensemble_df),
-    })
-
-    rows.append({
-        "Metric": "Status",
-        "Value": "Operational",
-    })
+    rows = [
+        {
+            "ExecutiveMetric": "Historical Draw Records",
+            "MetricValue": int(len(history)),
+            "Interpretation": "Lottery history available in the SQLite warehouse.",
+            "UpdatedAt": _now(),
+        },
+        {
+            "ExecutiveMetric": "Current Prediction Records",
+            "MetricValue": int(len(predictions)),
+            "Interpretation": "Lottery prediction rows currently available to the platform.",
+            "UpdatedAt": _now(),
+        },
+        {
+            "ExecutiveMetric": "Active Prediction Games",
+            "MetricValue": int(predictions["GameName"].nunique()) if not predictions.empty and "GameName" in predictions.columns else 0,
+            "Interpretation": "Unique lottery games represented in the current prediction set.",
+            "UpdatedAt": _now(),
+        },
+        {
+            "ExecutiveMetric": "Average Confidence",
+            "MetricValue": avg_conf,
+            "Interpretation": "Average confidence score across current lottery signals.",
+            "UpdatedAt": _now(),
+        },
+        {
+            "ExecutiveMetric": "Best Confidence",
+            "MetricValue": best_conf,
+            "Interpretation": "Highest current confidence signal in the platform.",
+            "UpdatedAt": _now(),
+        },
+        {
+            "ExecutiveMetric": "Model Leaderboard Rows",
+            "MetricValue": int(len(leaderboard)),
+            "Interpretation": "Rows available in the SQLite model leaderboard table.",
+            "UpdatedAt": _now(),
+        },
+    ]
 
     return pd.DataFrame(rows)
 
 
-def build_latest_results(master_df):
-    if master_df.empty:
+def build_coverage_summary(master_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    history = load_master_data() if master_df is None else master_df.copy()
+    predictions = load_base_predictions()
+
+    if history.empty and predictions.empty:
         return pd.DataFrame()
 
-    df = master_df.copy()
-
-    if "DrawDate" in df.columns:
-        df = df.sort_values(
-            by="DrawDate",
-            ascending=False
+    history_summary = pd.DataFrame()
+    if not history.empty and "GameName" in history.columns:
+        history_summary = (
+            history.groupby(["GameFamily", "GameName"], dropna=False)
+            .agg(
+                HistoricalDraws=("GameName", "size"),
+                LatestDrawDate=("DrawDate", "max") if "DrawDate" in history.columns else ("GameName", "size"),
+            )
+            .reset_index()
         )
 
-    preferred_cols = [
-        "GameFamily",
-        "GameName",
-        "DrawType",
-        "DrawNumber",
-        "DrawDate",
-        "DrawDay",
-        "N1",
-        "N2",
-        "N3",
-        "N4",
-        "N5",
-        "N6",
-        "Bonus",
-        "Jackpot",
-        "Outcome",
-        "SourceName",
-    ]
-
-    cols = [
-        col for col in preferred_cols
-        if col in df.columns
-    ]
-
-    return df[cols].head(50)
-
-
-def build_coverage_summary(master_df):
-    if master_df.empty:
-        return pd.DataFrame()
-
-    summary = (
-        master_df
-        .groupby(
-            [
-                "GameFamily",
-                "GameName"
-            ],
-            dropna=False
+    prediction_summary = pd.DataFrame()
+    if not predictions.empty and "GameName" in predictions.columns:
+        prediction_summary = (
+            predictions.groupby(["GameFamily", "GameName"], dropna=False)
+            .agg(
+                CurrentPredictions=("GameName", "size"),
+                AverageConfidence=("ConfidenceScore", "mean"),
+                BestConfidence=("ConfidenceScore", "max"),
+            )
+            .reset_index()
         )
-        .agg(
-            Rows=("GameName", "count"),
-            EarliestDrawDate=("DrawDate", "min"),
-            LatestDrawDate=("DrawDate", "max"),
+        prediction_summary["AverageConfidence"] = prediction_summary["AverageConfidence"].round(2)
+        prediction_summary["BestConfidence"] = prediction_summary["BestConfidence"].round(2)
+
+    if not history_summary.empty and not prediction_summary.empty:
+        out = history_summary.merge(prediction_summary, on=["GameFamily", "GameName"], how="outer")
+    elif not history_summary.empty:
+        out = history_summary
+        out["CurrentPredictions"] = 0
+        out["AverageConfidence"] = 0
+        out["BestConfidence"] = 0
+    else:
+        out = prediction_summary
+        out["HistoricalDraws"] = 0
+        out["LatestDrawDate"] = ""
+
+    if "LatestDrawDate" in out.columns:
+        out["LatestDrawDate"] = pd.to_datetime(out["LatestDrawDate"], errors="coerce").dt.strftime("%Y-%m-%d")
+
+    out["UpdatedAt"] = _now()
+    return out.sort_values(["GameFamily", "GameName"]).reset_index(drop=True)
+
+
+def build_platform_status() -> pd.DataFrame:
+    status = _safe_df("platform_refresh_status")
+    logs = _safe_df("platform_run_log")
+
+    rows: list[dict] = []
+
+    if not status.empty:
+        latest = status.tail(1).iloc[0]
+        rows.append(
+            {
+                "StatusArea": "Latest Pipeline Status",
+                "StatusValue": latest.get("Status", "Unknown"),
+                "Detail": f"Run {latest.get('RunID', '')} completed at {latest.get('FinishedAt', '')}.",
+                "UpdatedAt": _now(),
+            }
         )
-        .reset_index()
-    )
+    else:
+        rows.append(
+            {
+                "StatusArea": "Latest Pipeline Status",
+                "StatusValue": "Unknown",
+                "Detail": "platform_refresh_status table not found yet.",
+                "UpdatedAt": _now(),
+            }
+        )
 
-    return summary.sort_values(
-        by=[
-            "GameFamily",
-            "GameName"
-        ]
-    )
+    if not logs.empty:
+        rows.append(
+            {
+                "StatusArea": "Pipeline Log Rows",
+                "StatusValue": int(len(logs)),
+                "Detail": "Rows recorded in platform_run_log.",
+                "UpdatedAt": _now(),
+            }
+        )
 
+        failed = int((logs.get("Status", pd.Series(dtype=str)).astype(str).str.lower() == "failed").sum()) if "Status" in logs.columns else 0
+        rows.append(
+            {
+                "StatusArea": "Pipeline Failures",
+                "StatusValue": failed,
+                "Detail": "Failed step rows recorded in platform_run_log.",
+                "UpdatedAt": _now(),
+            }
+        )
 
-def build_platform_status():
-    return pd.DataFrame([
-        {
-            "Component": "Historical Ingestion",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Data Quality Checks",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Feature Engineering",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Base Prediction Models",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Backtesting",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Model Comparison",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Genetic Optimization",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Unified Model Dashboard",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Final Ensemble Predictions",
-            "Status": "Operational",
-        },
-        {
-            "Component": "Streamlit Frontend",
-            "Status": "Operational",
-        },
-    ])
+    db_summary = get_database_summary()
+    if not db_summary.empty:
+        rows.append(
+            {
+                "StatusArea": "SQLite Tables",
+                "StatusValue": int(len(db_summary)),
+                "Detail": "Total tables visible in the SQLite warehouse.",
+                "UpdatedAt": _now(),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def build_statistical_insights(
-    leaderboard_df,
-    vs_random_df
-):
-    rows = []
+    master_df: pd.DataFrame | None = None,
+    predictions_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    history = load_master_data() if master_df is None else master_df.copy()
+    predictions = load_base_predictions() if predictions_df is None else predictions_df.copy()
 
-    rows.append({
-        "Insight": "Random baseline remains critical.",
-        "Explanation": (
-            "The platform compares every model against random selection. "
-            "If random performs better, the model requires tuning."
-        ),
-    })
+    rows: list[dict] = []
 
-    rows.append({
-        "Insight": "Unified leaderboard is now active.",
-        "Explanation": (
-            "PowerBall, Lotto, Daily Lotto and UK49s are evaluated "
-            "through one cross-game performance view."
-        ),
-    })
-
-    rows.append({
-        "Insight": "Final ensemble layer is active.",
-        "Explanation": (
-            "Base predictions and genetic optimizer outputs are combined "
-            "into final ranked ensemble predictions."
-        ),
-    })
-
-    if not leaderboard_df.empty:
-        top = leaderboard_df.iloc[0]
-
-        rows.append({
-            "Insight": "Current top model",
-            "Explanation": (
-                f"{top.get('GameFamily', '-')}: "
-                f"{top.get('ModelName', '-')} currently ranks highest "
-                f"on AverageBestRegularMatch_PerDraw."
-            ),
-        })
-
-    if not vs_random_df.empty and "BeatsRandom_AvgBestRegular" in vs_random_df.columns:
-        beats_count = (
-            vs_random_df["BeatsRandom_AvgBestRegular"]
-            .astype(str)
-            .str.lower()
-            .eq("yes")
-            .sum()
+    if not predictions.empty and "ConfidenceScore" in predictions.columns:
+        rows.extend(
+            [
+                {
+                    "InsightArea": "Confidence Distribution",
+                    "InsightValue": int((predictions["ConfidenceScore"] >= 90).sum()),
+                    "Insight": "Current elite prediction count, using confidence >= 90.",
+                    "UpdatedAt": _now(),
+                },
+                {
+                    "InsightArea": "Confidence Distribution",
+                    "InsightValue": int((predictions["ConfidenceScore"] >= 80).sum()),
+                    "Insight": "Current high-or-better prediction count, using confidence >= 80.",
+                    "UpdatedAt": _now(),
+                },
+            ]
         )
 
-        rows.append({
-            "Insight": "Models beating random",
-            "Explanation": (
-                f"{beats_count} model/game combinations are currently "
-                "beating the random baseline on average best regular match."
-            ),
-        })
+    if not history.empty and "DrawDate" in history.columns and history["DrawDate"].notna().any():
+        rows.append(
+            {
+                "InsightArea": "History Currency",
+                "InsightValue": history["DrawDate"].max().strftime("%Y-%m-%d"),
+                "Insight": "Most recent historical lottery draw stored in SQLite.",
+                "UpdatedAt": _now(),
+            }
+        )
 
-    rows.append({
-        "Insight": "Important limitation",
-        "Explanation": (
-            "Lottery systems remain random. These analytics measure "
-            "historical behaviour only and do not guarantee future outcomes."
-        ),
-    })
+    rows.append(
+        {
+            "InsightArea": "Architecture",
+            "InsightValue": "SQLite-first",
+            "Insight": "Executive report generated from SQLite runtime tables only; Excel is no longer required at runtime.",
+            "UpdatedAt": _now(),
+        }
+    )
 
     return pd.DataFrame(rows)
+
+
+def build_latest_results(master_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    return build_daily_latest_results(master_df)
 
 
 # =========================================================
 # EXPORT
 # =========================================================
 
-def export_executive_report():
-    REPORTING_DIR.mkdir(
-        parents=True,
-        exist_ok=True
-    )
 
-    master_df = load_master_data()
-    leaderboard_df = load_unified_leaderboard()
-    best_by_game_df = load_best_by_game()
-    vs_random_df = load_vs_random()
-    game_summary_df = load_game_summary()
-    ensemble_df = load_final_ensembles()
+def export_executive_report() -> dict[str, int]:
+    print("\n======================================")
+    print("SQLITE EXECUTIVE LOTTERY REPORT")
+    print("======================================")
 
-    executive_summary = build_executive_summary(
-        master_df,
-        leaderboard_df,
-        ensemble_df
-    )
+    history = load_master_data()
+    predictions = load_base_predictions()
+    leaderboard = load_unified_leaderboard()
 
-    latest_results = build_latest_results(
-        master_df
-    )
-
-    coverage_summary = build_coverage_summary(
-        master_df
-    )
-
-    platform_status = build_platform_status()
-
-    statistical_insights = build_statistical_insights(
-        leaderboard_df,
-        vs_random_df
-    )
-
-    with pd.ExcelWriter(
-        OUTPUT_FILE,
-        engine="openpyxl",
-        mode="w"
-    ) as writer:
-
-        executive_summary.to_excel(
-            writer,
-            sheet_name="Executive_Summary",
-            index=False
-        )
-
-        platform_status.to_excel(
-            writer,
-            sheet_name="Platform_Status",
-            index=False
-        )
-
-        coverage_summary.to_excel(
-            writer,
-            sheet_name="Coverage_Summary",
-            index=False
-        )
-
-        latest_results.to_excel(
-            writer,
-            sheet_name="Latest_Results",
-            index=False
-        )
-
-        leaderboard_df.to_excel(
-            writer,
-            sheet_name="Unified_Leaderboard",
-            index=False
-        )
-
-        best_by_game_df.to_excel(
-            writer,
-            sheet_name="Best_By_Game",
-            index=False
-        )
-
-        vs_random_df.to_excel(
-            writer,
-            sheet_name="Vs_Random",
-            index=False
-        )
-
-        game_summary_df.to_excel(
-            writer,
-            sheet_name="Game_Summary",
-            index=False
-        )
-
-        ensemble_df.to_excel(
-            writer,
-            sheet_name="Final_Ensembles",
-            index=False
-        )
-
-        statistical_insights.to_excel(
-            writer,
-            sheet_name="Statistical_Insights",
-            index=False
-        )
-
-    print("\nExecutive lottery report exported.")
-    print(f"File: {OUTPUT_FILE}")
-
-    return {
-        "ExecutiveSummary": executive_summary,
-        "PlatformStatus": platform_status,
-        "CoverageSummary": coverage_summary,
-        "LatestResults": latest_results,
-        "UnifiedLeaderboard": leaderboard_df,
-        "BestByGame": best_by_game_df,
-        "VsRandom": vs_random_df,
-        "GameSummary": game_summary_df,
-        "FinalEnsembles": ensemble_df,
-        "StatisticalInsights": statistical_insights,
-        "File": str(OUTPUT_FILE),
+    outputs = {
+        EXECUTIVE_SUMMARY_TABLE: build_executive_summary(history, predictions, leaderboard),
+        EXECUTIVE_LATEST_RESULTS_TABLE: build_latest_results(history),
+        EXECUTIVE_COVERAGE_TABLE: build_coverage_summary(history),
+        EXECUTIVE_PLATFORM_STATUS_TABLE: build_platform_status(),
+        EXECUTIVE_STATISTICS_TABLE: build_statistical_insights(history, predictions),
+        EXECUTIVE_TOP_SIGNALS_TABLE: build_top_predictions(predictions, top_n=15),
     }
 
+    row_counts: dict[str, int] = {}
+    for table_name, df in outputs.items():
+        row_counts[table_name] = replace_sqlite_table(table_name, df)
 
-# =========================================================
-# CLI
-# =========================================================
+    create_indexes(EXECUTIVE_LATEST_RESULTS_TABLE, ["GameFamily", "GameName", "DrawDate"])
+    create_indexes(EXECUTIVE_COVERAGE_TABLE, ["GameFamily", "GameName"])
+    create_indexes(EXECUTIVE_TOP_SIGNALS_TABLE, ["GameFamily", "GameName", "ConfidenceScore"])
 
-def main():
-    export_executive_report()
+    print("\nSQLite executive report tables refreshed.")
+    for table_name, rows in row_counts.items():
+        print(f"{table_name}: {rows}")
+    print("======================================\n")
+
+    return row_counts
+
+
+def main() -> dict[str, int]:
+    return export_executive_report()
 
 
 if __name__ == "__main__":

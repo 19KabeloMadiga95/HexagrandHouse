@@ -1,579 +1,277 @@
-from pathlib import Path
+from __future__ import annotations
+
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
-from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
-from openpyxl.formatting.rule import ColorScaleRule, DataBarRule
+
+from src.data.database import table_exists
+from src.data.sqlite_store import create_indexes, read_sqlite_table, replace_sqlite_table
+from src.lottery.scoring.unified_model_performance_dashboard import (
+    _confidence_label,
+    _format_number_set,
+    load_predictions,
+)
 
 
 # =========================================================
-# PROJECT PATHS
+# SQLITE-FIRST POWERBALL MODEL PERFORMANCE DASHBOARD
 # =========================================================
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-BACKTEST_DIR = BASE_DIR / "data" / "exports" / "backtesting"
-
-POWERBALL_COMPARISON_FILE = BACKTEST_DIR / "powerball_model_comparison_backtest.xlsx"
-POWERBALL_BASIC_BACKTEST_FILE = BACKTEST_DIR / "powerball_backtest_results.xlsx"
-
-DASHBOARD_FILE = BACKTEST_DIR / "model_performance_dashboard.xlsx"
+POWERBALL_DASHBOARD_TABLE = "lottery_powerball_model_dashboard_summary"
+POWERBALL_LEADERBOARD_TABLE = "lottery_powerball_model_leaderboard"
+POWERBALL_RANDOM_TABLE = "lottery_powerball_model_vs_random"
+POWERBALL_NOTES_TABLE = "lottery_powerball_model_notes"
 
 
-# =========================================================
-# LOADERS
-# =========================================================
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-def read_excel_sheet(path, sheet_name):
-    if not path.exists():
-        return pd.DataFrame()
 
-    try:
-        return pd.read_excel(
-            path,
-            sheet_name=sheet_name,
-            engine="openpyxl"
+def load_powerball_predictions() -> pd.DataFrame:
+    df = load_predictions()
+    if df.empty:
+        return df
+
+    if "GameFamily" in df.columns:
+        filtered = df[df["GameFamily"].astype(str).str.contains("Power", case=False, na=False)].copy()
+        if not filtered.empty:
+            return filtered
+
+    if "GameName" in df.columns:
+        return df[df["GameName"].astype(str).str.contains("Power", case=False, na=False)].copy()
+
+    return pd.DataFrame()
+
+
+# Backward compatible loader name.
+def load_powerball_comparison() -> pd.DataFrame:
+    return load_powerball_predictions()
+
+
+def build_dashboard_summary(summary_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_powerball_predictions() if summary_df is None else summary_df.copy()
+
+    if df.empty:
+        return pd.DataFrame(
+            [
+                {
+                    "Metric": "PowerBall Runtime Predictions",
+                    "Value": 0,
+                    "Description": "No PowerBall rows found in lottery_predictions.",
+                    "UpdatedAt": _now(),
+                }
+            ]
         )
-    except Exception:
-        return pd.DataFrame()
 
+    avg_conf = round(float(df["ConfidenceScore"].mean()), 2)
+    best_conf = round(float(df["ConfidenceScore"].max()), 2)
 
-def load_powerball_comparison():
-    summary = read_excel_sheet(
-        POWERBALL_COMPARISON_FILE,
-        "Summary"
-    )
-
-    rank_summary = read_excel_sheet(
-        POWERBALL_COMPARISON_FILE,
-        "Rank_Summary"
-    )
-
-    hit_distribution = read_excel_sheet(
-        POWERBALL_COMPARISON_FILE,
-        "Hit_Distribution"
-    )
-
-    model_configs = read_excel_sheet(
-        POWERBALL_COMPARISON_FILE,
-        "Model_Configs"
-    )
-
-    detailed_results = read_excel_sheet(
-        POWERBALL_COMPARISON_FILE,
-        "Detailed_Results"
-    )
-
-    return {
-        "summary": summary,
-        "rank_summary": rank_summary,
-        "hit_distribution": hit_distribution,
-        "model_configs": model_configs,
-        "detailed_results": detailed_results,
-    }
-
-
-# =========================================================
-# DASHBOARD TABLES
-# =========================================================
-
-def build_dashboard_summary(summary_df):
-    if summary_df.empty:
-        return pd.DataFrame([
-            {
-                "Metric": "Status",
-                "Value": "No model summary data found.",
-            }
-        ])
-
-    ranked = summary_df.copy()
-
-    ranked = ranked.sort_values(
-        by=[
-            "AverageBestRegularMatch_PerDraw",
-            "DrawsWithAtLeast3RegularMatches",
-            "AverageTotalScore_AllRows",
-        ],
-        ascending=[False, False, False]
-    ).reset_index(drop=True)
-
-    best_model = ranked.iloc[0]
-
-    random_row = ranked[
-        ranked["ModelName"] == "Random_Baseline"
-    ]
-
-    if not random_row.empty:
-        random_row = random_row.iloc[0]
-        improvement_vs_random = (
-            best_model["AverageBestRegularMatch_PerDraw"]
-            - random_row["AverageBestRegularMatch_PerDraw"]
-        )
-    else:
-        improvement_vs_random = None
+    latest_generated = ""
+    if "GeneratedAt" in df.columns and df["GeneratedAt"].notna().any():
+        latest_generated = pd.to_datetime(df["GeneratedAt"], errors="coerce").max().strftime("%Y-%m-%d %H:%M:%S")
 
     rows = [
         {
-            "Metric": "Report Generated At",
-            "Value": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Metric": "PowerBall Runtime Predictions",
+            "Value": int(len(df)),
+            "Description": "PowerBall and PowerBall Plus predictions currently available in SQLite.",
+            "UpdatedAt": _now(),
         },
         {
-            "Metric": "Models Compared",
-            "Value": summary_df["ModelName"].nunique(),
+            "Metric": "Average Confidence",
+            "Value": avg_conf,
+            "Description": "Average confidence score for PowerBall-family predictions.",
+            "UpdatedAt": _now(),
         },
         {
-            "Metric": "Best Model",
-            "Value": best_model["ModelName"],
+            "Metric": "Best Confidence",
+            "Value": best_conf,
+            "Description": "Highest confidence score in current PowerBall-family predictions.",
+            "UpdatedAt": _now(),
         },
         {
-            "Metric": "Best Model Avg Best Regular Match / Draw",
-            "Value": round(best_model["AverageBestRegularMatch_PerDraw"], 4),
+            "Metric": "Elite Predictions",
+            "Value": int((df["ConfidenceScore"] >= 90).sum()),
+            "Description": "PowerBall-family predictions scoring 90 or higher.",
+            "UpdatedAt": _now(),
         },
         {
-            "Metric": "Best Model 3+ Match Draws",
-            "Value": int(best_model["DrawsWithAtLeast3RegularMatches"]),
-        },
-        {
-            "Metric": "Best Model Bonus Hit Draw Rate",
-            "Value": round(best_model["BonusHitDrawRate"], 4),
+            "Metric": "Latest Prediction Run",
+            "Value": latest_generated,
+            "Description": "Latest GeneratedAt timestamp for PowerBall-family predictions.",
+            "UpdatedAt": _now(),
         },
     ]
-
-    if improvement_vs_random is not None:
-        rows.append({
-            "Metric": "Best Model Improvement vs Random",
-            "Value": round(improvement_vs_random, 4),
-        })
 
     return pd.DataFrame(rows)
 
 
-def build_leaderboard(summary_df):
-    if summary_df.empty:
+def build_leaderboard(summary_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_powerball_predictions() if summary_df is None else summary_df.copy()
+    if df.empty:
         return pd.DataFrame()
 
-    leaderboard = summary_df.copy()
-
-    leaderboard = leaderboard.sort_values(
-        by=[
-            "AverageBestRegularMatch_PerDraw",
-            "DrawsWithAtLeast3RegularMatches",
-            "AverageTotalScore_AllRows",
-            "BonusHitDrawRate",
-        ],
-        ascending=[False, False, False, False]
-    ).reset_index(drop=True)
-
-    leaderboard["DashboardRank"] = leaderboard.index + 1
-
-    preferred_cols = [
-        "DashboardRank",
+    keep_cols = [
+        "GameFamily",
+        "GameName",
+        "PredictionRank",
+        "NumberSetDisplay",
+        "ConfidenceScore",
+        "ConfidenceLabel",
         "ModelName",
-        "PredictionRows",
-        "DrawsTested",
-        "AverageRegularMatches_AllRows",
-        "AverageTotalScore_AllRows",
-        "BestRegularMatch_AnyRow",
-        "BestTotalScore_AnyRow",
-        "AverageBestScore_PerDraw",
-        "AverageBestRegularMatch_PerDraw",
-        "DrawsWithAtLeast2RegularMatches",
-        "DrawsWithAtLeast3RegularMatches",
-        "DrawsWithBonusHit",
-        "BonusHitDrawRate",
+        "ModelVersion",
+        "RuleVersion",
+        "RegularRange",
+        "BonusRange",
+        "GeneratedAt",
     ]
 
-    cols = [
-        col for col in preferred_cols
-        if col in leaderboard.columns
-    ]
+    for column in keep_cols:
+        if column not in df.columns:
+            if column == "NumberSetDisplay":
+                df[column] = df.apply(_format_number_set, axis=1)
+            elif column == "ConfidenceLabel":
+                df[column] = df["ConfidenceScore"].apply(_confidence_label)
+            else:
+                df[column] = ""
 
-    return leaderboard[cols]
+    out = df.sort_values("ConfidenceScore", ascending=False)[keep_cols].copy()
+    out["UpdatedAt"] = _now()
+    return out.reset_index(drop=True)
 
 
-def build_random_comparison(summary_df):
-    if summary_df.empty:
+def build_random_comparison(summary_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_powerball_predictions() if summary_df is None else summary_df.copy()
+    if df.empty:
         return pd.DataFrame()
-
-    random = summary_df[
-        summary_df["ModelName"] == "Random_Baseline"
-    ]
-
-    if random.empty:
-        return pd.DataFrame()
-
-    random = random.iloc[0]
 
     rows = []
+    for game_name, group in df.groupby("GameName", dropna=False):
+        rows.append(
+            {
+                "GameName": game_name,
+                "PredictionCount": int(len(group)),
+                "AverageConfidence": round(float(group["ConfidenceScore"].mean()), 2),
+                "BestConfidence": round(float(group["ConfidenceScore"].max()), 2),
+                "BaselineDescription": "Model confidence is a ranking signal. It is not a jackpot probability and should not be read as guaranteed accuracy.",
+                "UpdatedAt": _now(),
+            }
+        )
 
-    for _, row in summary_df.iterrows():
-        rows.append({
-            "ModelName": row["ModelName"],
-            "AvgBestRegularMatch_PerDraw": row["AverageBestRegularMatch_PerDraw"],
-            "Random_AvgBestRegularMatch_PerDraw": random["AverageBestRegularMatch_PerDraw"],
-            "Difference_vs_Random": round(
-                row["AverageBestRegularMatch_PerDraw"]
-                - random["AverageBestRegularMatch_PerDraw"],
-                4
-            ),
-            "AtLeast2_Diff_vs_Random": int(
-                row["DrawsWithAtLeast2RegularMatches"]
-                - random["DrawsWithAtLeast2RegularMatches"]
-            ),
-            "AtLeast3_Diff_vs_Random": int(
-                row["DrawsWithAtLeast3RegularMatches"]
-                - random["DrawsWithAtLeast3RegularMatches"]
-            ),
-            "BonusHitRate_Diff_vs_Random": round(
-                row["BonusHitDrawRate"]
-                - random["BonusHitDrawRate"],
-                4
-            ),
-            "BeatsRandom_AvgBestRegular": (
-                "Yes"
-                if row["AverageBestRegularMatch_PerDraw"]
-                > random["AverageBestRegularMatch_PerDraw"]
-                else "No"
-            ),
-        })
-
-    comparison = pd.DataFrame(rows)
-
-    comparison = comparison.sort_values(
-        by="Difference_vs_Random",
-        ascending=False
-    ).reset_index(drop=True)
-
-    return comparison
+    return pd.DataFrame(rows)
 
 
-def build_hit_pivot(hit_distribution_df):
-    if hit_distribution_df.empty:
+def build_hit_pivot(hit_distribution_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_powerball_predictions() if hit_distribution_df is None else hit_distribution_df.copy()
+    if df.empty:
         return pd.DataFrame()
 
-    pivot = hit_distribution_df.pivot_table(
-        index="ModelName",
-        columns="RegularMatches",
-        values="Count",
-        aggfunc="sum",
-        fill_value=0
-    ).reset_index()
+    if "ConfidenceLabel" not in df.columns:
+        df["ConfidenceLabel"] = df["ConfidenceScore"].apply(_confidence_label)
 
-    pivot.columns = [
-        f"Matches_{col}" if isinstance(col, int) else str(col)
-        for col in pivot.columns
-    ]
-
-    return pivot
+    out = (
+        df.groupby(["GameName", "ConfidenceLabel"], dropna=False)
+        .size()
+        .reset_index(name="PredictionCount")
+    )
+    out["UpdatedAt"] = _now()
+    return out
 
 
-def build_rank_effectiveness(rank_summary_df):
-    if rank_summary_df.empty:
+def build_rank_effectiveness(rank_summary_df: pd.DataFrame | None = None) -> pd.DataFrame:
+    df = load_powerball_predictions() if rank_summary_df is None else rank_summary_df.copy()
+    if df.empty:
         return pd.DataFrame()
 
-    rank_df = rank_summary_df.copy()
+    if "PredictionRank" not in df.columns:
+        df["PredictionRank"] = range(1, len(df) + 1)
 
-    rank_df = rank_df.sort_values(
-        by=["ModelName", "PredictionRank"]
-    ).reset_index(drop=True)
-
-    return rank_df
-
-
-def build_model_notes():
-    notes = [
-        {
-            "Section": "Purpose",
-            "Note": "This dashboard compares PowerBall model performance against random baseline results.",
-        },
-        {
-            "Section": "Main Question",
-            "Note": "Does a statistical model outperform random number selection?",
-        },
-        {
-            "Section": "Key Metric",
-            "Note": "AverageBestRegularMatch_PerDraw is the primary practical metric.",
-        },
-        {
-            "Section": "Secondary Metric",
-            "Note": "DrawsWithAtLeast3RegularMatches shows stronger hit events.",
-        },
-        {
-            "Section": "Warning",
-            "Note": "Lottery outcomes are random. These models measure historical pattern behaviour, not guaranteed future wins.",
-        },
-        {
-            "Section": "Next Improvement",
-            "Note": "Use leaderboard results to tune model configuration, then rerun backtesting.",
-        },
-    ]
-
-    return pd.DataFrame(notes)
+    out = (
+        df.groupby(["GameName", "PredictionRank"], dropna=False)
+        .agg(
+            AvgConfidence=("ConfidenceScore", "mean"),
+            PredictionCount=("GameName", "size"),
+        )
+        .reset_index()
+    )
+    out["AvgConfidence"] = out["AvgConfidence"].round(2)
+    out["UpdatedAt"] = _now()
+    return out
 
 
-# =========================================================
-# EXPORT
-# =========================================================
-
-def export_model_performance_dashboard():
-    data = load_powerball_comparison()
-
-    summary_df = data["summary"]
-    rank_summary_df = data["rank_summary"]
-    hit_distribution_df = data["hit_distribution"]
-    model_configs_df = data["model_configs"]
-    detailed_results_df = data["detailed_results"]
-
-    dashboard_summary = build_dashboard_summary(summary_df)
-    leaderboard = build_leaderboard(summary_df)
-    random_comparison = build_random_comparison(summary_df)
-    hit_pivot = build_hit_pivot(hit_distribution_df)
-    rank_effectiveness = build_rank_effectiveness(rank_summary_df)
-    model_notes = build_model_notes()
-
-    DASHBOARD_FILE.parent.mkdir(
-        parents=True,
-        exist_ok=True
+def build_model_notes() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "NoteType": "Runtime Source",
+                "Note": "PowerBall model dashboard now reads from SQLite lottery_predictions only.",
+                "UpdatedAt": _now(),
+            },
+            {
+                "NoteType": "Interpretation",
+                "Note": "Scores rank candidate sets. They do not guarantee draw outcomes.",
+                "UpdatedAt": _now(),
+            },
+        ]
     )
 
-    with pd.ExcelWriter(
-        DASHBOARD_FILE,
-        engine="openpyxl",
-        mode="w"
-    ) as writer:
-        dashboard_summary.to_excel(
-            writer,
-            sheet_name="Dashboard",
-            index=False
-        )
 
-        leaderboard.to_excel(
-            writer,
-            sheet_name="Leaderboard",
-            index=False
-        )
+def export_model_performance_dashboard() -> dict[str, int]:
+    print("\n======================================")
+    print("SQLITE POWERBALL MODEL PERFORMANCE")
+    print("======================================")
 
-        random_comparison.to_excel(
-            writer,
-            sheet_name="Vs_Random",
-            index=False
-        )
+    df = load_powerball_predictions()
+    dashboard = build_dashboard_summary(df)
+    leaderboard = build_leaderboard(df)
+    random_comparison = build_random_comparison(df)
+    notes = build_model_notes()
 
-        hit_pivot.to_excel(
-            writer,
-            sheet_name="Hit_Distribution",
-            index=False
-        )
-
-        rank_effectiveness.to_excel(
-            writer,
-            sheet_name="Rank_Effectiveness",
-            index=False
-        )
-
-        model_configs_df.to_excel(
-            writer,
-            sheet_name="Model_Configs",
-            index=False
-        )
-
-        model_notes.to_excel(
-            writer,
-            sheet_name="Notes",
-            index=False
-        )
-
-        if not detailed_results_df.empty:
-            detailed_results_df.head(5000).to_excel(
-                writer,
-                sheet_name="Detailed_Sample",
-                index=False
-            )
-
-    style_dashboard_workbook()
-
-    print("\nModel performance dashboard exported.")
-    print(f"File: {DASHBOARD_FILE}")
-
-    if not leaderboard.empty:
-        print("\nTop models:")
-        print(
-            leaderboard[
-                [
-                    "DashboardRank",
-                    "ModelName",
-                    "AverageBestRegularMatch_PerDraw",
-                    "DrawsWithAtLeast3RegularMatches",
-                    "BonusHitDrawRate",
-                ]
-            ].head(10).to_string(index=False)
-        )
-
-    return {
-        "dashboard_summary": dashboard_summary,
-        "leaderboard": leaderboard,
-        "random_comparison": random_comparison,
-        "file": DASHBOARD_FILE,
+    outputs = {
+        POWERBALL_DASHBOARD_TABLE: dashboard,
+        POWERBALL_LEADERBOARD_TABLE: leaderboard,
+        POWERBALL_RANDOM_TABLE: random_comparison,
+        POWERBALL_NOTES_TABLE: notes,
     }
 
+    row_counts: dict[str, int] = {}
+    for table_name, out_df in outputs.items():
+        row_counts[table_name] = replace_sqlite_table(table_name, out_df)
 
-# =========================================================
-# STYLING
-# =========================================================
+    create_indexes(POWERBALL_LEADERBOARD_TABLE, ["GameName", "ConfidenceScore", "PredictionRank"])
 
+    print("\nSQLite PowerBall scoring tables refreshed.")
+    for table_name, rows in row_counts.items():
+        print(f"{table_name}: {rows}")
+    print("======================================\n")
+
+    return row_counts
+
+
+# Compatibility placeholders retained for old imports.
 def style_header(ws):
-    fill = PatternFill(
-        fill_type="solid",
-        fgColor="1F2937"
-    )
-
-    font = Font(
-        bold=True,
-        color="FFFFFF"
-    )
-
-    for cell in ws[1]:
-        cell.fill = fill
-        cell.font = font
-        cell.alignment = Alignment(
-            horizontal="center",
-            vertical="center"
-        )
+    return ws
 
 
 def auto_fit_columns(ws):
-    for col_idx in range(1, ws.max_column + 1):
-        col_letter = get_column_letter(col_idx)
-
-        max_length = 0
-
-        for cell in ws[col_letter]:
-            if cell.value is not None:
-                max_length = max(
-                    max_length,
-                    len(str(cell.value))
-                )
-
-        ws.column_dimensions[col_letter].width = min(
-            max_length + 3,
-            45
-        )
+    return ws
 
 
 def style_body(ws):
-    thin_border = Border(
-        bottom=Side(
-            style="thin",
-            color="D1D5DB"
-        )
-    )
-
-    for row in ws.iter_rows(
-        min_row=2,
-        max_row=ws.max_row
-    ):
-        for cell in row:
-            cell.border = thin_border
-            cell.alignment = Alignment(
-                vertical="center"
-            )
+    return ws
 
 
 def add_conditional_formatting(ws):
-    headers = {
-        cell.value: cell.column
-        for cell in ws[1]
-        if cell.value
-    }
-
-    possible_heat_cols = [
-        "AverageBestRegularMatch_PerDraw",
-        "AverageTotalScore_AllRows",
-        "BonusHitDrawRate",
-        "Difference_vs_Random",
-        "AvgRegularMatches",
-        "AvgTotalScore",
-    ]
-
-    for col_name in possible_heat_cols:
-        if col_name not in headers:
-            continue
-
-        col_idx = headers[col_name]
-        col_letter = get_column_letter(col_idx)
-
-        if ws.max_row >= 2:
-            ws.conditional_formatting.add(
-                f"{col_letter}2:{col_letter}{ws.max_row}",
-                ColorScaleRule(
-                    start_type="min",
-                    start_color="FCA5A5",
-                    mid_type="percentile",
-                    mid_value=50,
-                    mid_color="FEF3C7",
-                    end_type="max",
-                    end_color="86EFAC",
-                )
-            )
-
-    bar_cols = [
-        "DrawsWithAtLeast2RegularMatches",
-        "DrawsWithAtLeast3RegularMatches",
-        "DrawsWithBonusHit",
-    ]
-
-    for col_name in bar_cols:
-        if col_name not in headers:
-            continue
-
-        col_idx = headers[col_name]
-        col_letter = get_column_letter(col_idx)
-
-        if ws.max_row >= 2:
-            ws.conditional_formatting.add(
-                f"{col_letter}2:{col_letter}{ws.max_row}",
-                DataBarRule(
-                    start_type="min",
-                    end_type="max",
-                    color="60A5FA"
-                )
-            )
+    return ws
 
 
 def style_dashboard_workbook():
-    wb = load_workbook(DASHBOARD_FILE)
-
-    for ws in wb.worksheets:
-        ws.sheet_view.showGridLines = False
-        ws.freeze_panes = "A2"
-
-        style_header(ws)
-        style_body(ws)
-        auto_fit_columns(ws)
-        add_conditional_formatting(ws)
-
-    if "Dashboard" in wb.sheetnames:
-        ws = wb["Dashboard"]
-        ws.column_dimensions["A"].width = 45
-        ws.column_dimensions["B"].width = 45
-
-        for cell in ws["A"]:
-            cell.font = Font(
-                bold=True,
-                color="111827"
-            )
-
-    wb.save(DASHBOARD_FILE)
+    return None
 
 
-# =========================================================
-# CLI
-# =========================================================
-
-def main():
-    export_model_performance_dashboard()
+def main() -> dict[str, int]:
+    return export_model_performance_dashboard()
 
 
 if __name__ == "__main__":

@@ -1,560 +1,274 @@
-from pathlib import Path
-from datetime import datetime, timedelta
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
 import traceback
+from typing import Callable, Any
 
 import pandas as pd
 
-
-# =========================================================
-# IMPORT PIPELINES
-# =========================================================
-
-from src.lottery.pipelines.update_all_lottery_history import (
-    update_all_lottery_history,
-)
-
-from src.lottery.analytics.lottery_quality_checks import (
-    run_quality_checks,
-)
-
-from src.lottery.features.export_lottery_features import (
-    export_all_lottery_features,
-)
-
-from src.lottery.models.export_all_predictions import (
-    export_all_predictions,
-)
+from src.data.sqlite_store import append_sqlite_table, create_indexes, replace_sqlite_table
+from src.lottery.features.export_lottery_features import export_all_lottery_features
+from src.lottery.models.export_all_predictions import export_all_predictions
+from src.lottery.optimization.ensemble_prediction_engine import export_ensemble_predictions
+from src.lottery.reporting.export_lottery_reporting import export_lottery_reporting
 
 
 # =========================================================
-# BACKTESTING
+# SQLITE-FIRST DAILY LOTTERY CYCLE
 # =========================================================
 
-from src.lottery.backtesting.backtest_powerball_model import (
-    export_powerball_backtest,
-)
-
-from src.lottery.backtesting.backtest_lotto_model import (
-    export_lotto_backtest,
-)
-
-from src.lottery.backtesting.backtest_daily_lotto_model import (
-    export_daily_lotto_backtest,
-)
-
-from src.lottery.backtesting.backtest_uk49s_model import (
-    export_uk49s_backtest,
-)
+RUN_LOG_TABLE = "platform_run_log"
+REFRESH_STATUS_TABLE = "platform_refresh_status"
+PIPELINE_NAME = "SQLite Lottery Daily Cycle"
 
 
-# =========================================================
-# MODEL COMPARISONS
-# =========================================================
-
-from src.lottery.backtesting.powerball_model_comparison import (
-    export_model_comparison_backtest,
-)
-
-from src.lottery.backtesting.lotto_model_comparison import (
-    export_lotto_model_comparison_backtest,
-)
-
-from src.lottery.backtesting.daily_lotto_model_comparison import (
-    export_daily_lotto_model_comparison_backtest,
-)
-
-from src.lottery.backtesting.uk49s_model_comparison import (
-    export_uk49s_model_comparison_backtest,
-)
+@dataclass
+class CycleStep:
+    name: str
+    function: Callable[[], Any]
+    required: bool = True
 
 
-# =========================================================
-# OPTIMIZATION
-# =========================================================
-
-from src.lottery.optimization.powerball_genetic_optimizer import (
-    run_powerball_genetic_optimizer,
-)
-
-from src.lottery.optimization.lotto_genetic_optimizer import (
-    run_lotto_genetic_optimizer,
-)
-
-from src.lottery.optimization.daily_lotto_genetic_optimizer import (
-    run_daily_lotto_genetic_optimizer,
-)
-
-from src.lottery.optimization.uk49s_genetic_optimizer import (
-    run_uk49s_genetic_optimizer,
-)
-
-from src.lottery.optimization.adaptive_weight_tuner import (
-    run_adaptive_weight_tuner,
-)
+def current_timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-# =========================================================
-# ENSEMBLE + SCORING
-# =========================================================
+def _safe_row_count(result: Any) -> int | None:
+    """Best-effort row count for logs."""
 
-from src.lottery.optimization.ensemble_prediction_engine import (
-    export_ensemble_predictions,
-)
-
-from src.lottery.scoring.model_performance_dashboard import (
-    export_model_performance_dashboard,
-)
-
-from src.lottery.scoring.unified_model_performance_dashboard import (
-    export_unified_model_performance_dashboard,
-)
-
-
-# =========================================================
-# REPORTING
-# =========================================================
-
-from src.lottery.reporting.executive_lottery_report import (
-    export_executive_report,
-)
-
-from src.lottery.reporting.daily_lottery_summary_generator import (
-    export_daily_summary,
-)
-
-
-# =========================================================
-# PROJECT PATHS
-# =========================================================
-
-BASE_DIR = Path(__file__).resolve().parents[3]
-
-LOG_DIR = (
-    BASE_DIR
-    / "data"
-    / "logs"
-)
-
-LOG_FILE = (
-    LOG_DIR
-    / "daily_lottery_cycle_log.xlsx"
-)
-
-
-# =========================================================
-# CONFIG
-# =========================================================
-
-INCREMENTAL_LOOKBACK_DAYS = 3
-
-
-# =========================================================
-# HELPERS
-# =========================================================
-
-def current_timestamp():
-    return datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-
-def get_incremental_year_window(
-    lookback_days=INCREMENTAL_LOOKBACK_DAYS
-):
-    today = datetime.today().date()
-
-    start_date = today - timedelta(
-        days=lookback_days
-    )
-
-    return start_date.year, today.year
-
-
-def run_incremental_history_update():
-    start_year, end_year = get_incremental_year_window()
-
-    print("\nIncremental history refresh mode enabled.")
-    print(f"Lookback days : {INCREMENTAL_LOOKBACK_DAYS}")
-    print(f"Start year    : {start_year}")
-    print(f"End year      : {end_year}")
-
-    return update_all_lottery_history(
-        start_year=start_year,
-        end_year=end_year,
-    )
-
-
-def safe_row_count(result):
     try:
         if isinstance(result, pd.DataFrame):
+            return int(len(result))
+
+        if isinstance(result, list):
+            if all(isinstance(item, dict) for item in result):
+                total = 0
+                found_rows = False
+                for item in result:
+                    if "Rows" in item:
+                        total += int(item.get("Rows") or 0)
+                        found_rows = True
+                return total if found_rows else len(result)
             return len(result)
 
         if isinstance(result, tuple):
-            for item in result:
-                if isinstance(item, pd.DataFrame):
-                    return len(item)
+            counts = [_safe_row_count(item) for item in result]
+            counts = [count for count in counts if count is not None]
+            return sum(counts) if counts else None
 
         if isinstance(result, dict):
-            for value in result.values():
-                if isinstance(value, pd.DataFrame):
-                    return len(value)
+            for key in ("Rows", "RowCount", "RowsProcessed"):
+                if key in result and result[key] is not None:
+                    return int(result[key])
 
-        if isinstance(result, list):
-            return len(result)
-
-        return None
+            counts = [_safe_row_count(value) for value in result.values()]
+            counts = [count for count in counts if count is not None]
+            return sum(counts) if counts else None
 
     except Exception:
         return None
 
+    return None
 
-# =========================================================
-# STEP RUNNER
-# =========================================================
 
-def run_step(
-    step_name,
-    function,
-    logs,
-):
+def _run_step(step: CycleStep, run_id: str) -> dict:
     print("\n======================================")
-    print(f"RUNNING: {step_name}")
+    print(f"RUNNING: {step.name}")
     print("======================================")
 
-    start_time = datetime.now()
+    started_at = datetime.now()
 
     try:
-        result = function()
+        result = step.function()
+        finished_at = datetime.now()
+        duration = round((finished_at - started_at).total_seconds(), 2)
+        row_count = _safe_row_count(result)
 
-        end_time = datetime.now()
-
-        duration = round(
-            (
-                end_time - start_time
-            ).total_seconds(),
-            2
-        )
-
-        row_count = safe_row_count(
-            result
-        )
-
-        logs.append({
-            "RunTimestamp": current_timestamp(),
-            "StepName": step_name,
+        log_row = {
+            "RunID": run_id,
+            "PipelineName": PIPELINE_NAME,
+            "StepName": step.name,
             "Status": "Success",
+            "StartedAt": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "FinishedAt": finished_at.strftime("%Y-%m-%d %H:%M:%S"),
             "DurationSeconds": duration,
             "RowsProcessed": row_count,
             "ErrorMessage": "",
-        })
+        }
 
-        print(f"\nSUCCESS: {step_name}")
+        print(f"\nSUCCESS: {step.name}")
         print(f"Duration: {duration} sec")
-
         if row_count is not None:
             print(f"Rows: {row_count}")
 
-        return True
+        return log_row
 
-    except Exception as e:
-        end_time = datetime.now()
-
-        duration = round(
-            (
-                end_time - start_time
-            ).total_seconds(),
-            2
-        )
-
-        error_message = str(e)
+    except Exception as exc:
+        finished_at = datetime.now()
+        duration = round((finished_at - started_at).total_seconds(), 2)
+        error_message = str(exc)
         traceback_text = traceback.format_exc()
 
-        logs.append({
-            "RunTimestamp": current_timestamp(),
-            "StepName": step_name,
+        log_row = {
+            "RunID": run_id,
+            "PipelineName": PIPELINE_NAME,
+            "StepName": step.name,
             "Status": "Failed",
+            "StartedAt": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "FinishedAt": finished_at.strftime("%Y-%m-%d %H:%M:%S"),
             "DurationSeconds": duration,
             "RowsProcessed": None,
             "ErrorMessage": error_message,
-        })
+        }
 
-        print(f"\nFAILED: {step_name}")
+        print(f"\nFAILED: {step.name}")
+        print(f"Duration: {duration} sec")
         print(f"Error: {error_message}")
-
         print("\nTRACEBACK:")
         print(traceback_text)
 
-        return False
+        if step.required:
+            raise
+
+        return log_row
 
 
-# =========================================================
-# LOGGING
-# =========================================================
+def _write_run_logs(logs: list[dict]) -> int:
+    log_df = pd.DataFrame(logs)
+    rows = append_sqlite_table(RUN_LOG_TABLE, log_df)
+    create_indexes(RUN_LOG_TABLE, ["RunID", "PipelineName", "StepName", "Status", "StartedAt"])
+    return rows
 
-def export_logs(logs):
-    LOG_DIR.mkdir(
-        parents=True,
-        exist_ok=True
+
+def _write_refresh_status(run_id: str, logs: list[dict], started_at: datetime, finished_at: datetime) -> pd.DataFrame:
+    success_count = sum(1 for row in logs if row["Status"] == "Success")
+    failure_count = sum(1 for row in logs if row["Status"] == "Failed")
+    total_duration = round((finished_at - started_at).total_seconds(), 2)
+
+    status_df = pd.DataFrame(
+        [
+            {
+                "RunID": run_id,
+                "PipelineName": PIPELINE_NAME,
+                "Status": "Success" if failure_count == 0 else "Failed",
+                "StartedAt": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "FinishedAt": finished_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "DurationSeconds": total_duration,
+                "SuccessCount": success_count,
+                "FailureCount": failure_count,
+                "UpdatedAt": current_timestamp(),
+            }
+        ]
     )
 
-    new_log_df = pd.DataFrame(logs)
-
-    if LOG_FILE.exists():
-        try:
-            existing = pd.read_excel(
-                LOG_FILE,
-                engine="openpyxl"
-            )
-
-            combined = pd.concat(
-                [
-                    existing,
-                    new_log_df
-                ],
-                ignore_index=True
-            )
-
-        except Exception:
-            combined = new_log_df
-
-    else:
-        combined = new_log_df
-
-    combined.to_excel(
-        LOG_FILE,
-        sheet_name="Daily_Cycle_Log",
-        index=False
-    )
-
-    return combined
+    replace_sqlite_table(REFRESH_STATUS_TABLE, status_df)
+    create_indexes(REFRESH_STATUS_TABLE, ["RunID", "PipelineName", "Status", "UpdatedAt"])
+    return status_df
 
 
-# =========================================================
-# MAIN AUTOMATION
-# =========================================================
+def build_cycle_steps() -> list[CycleStep]:
+    """
+    Runtime-safe lottery cycle.
 
-def run_daily_lottery_cycle():
+    This intentionally excludes the old Excel-heavy history rebuild,
+    backtesting workbooks, scoring workbooks, and reporting workbooks.
+    Those will be migrated in later batches.
+    """
+
+    return [
+        CycleStep(
+            name="Build Lottery Feature Tables",
+            function=export_all_lottery_features,
+            required=True,
+        ),
+        CycleStep(
+            name="Generate Lottery Prediction Tables",
+            function=export_all_predictions,
+            required=True,
+        ),
+        CycleStep(
+            name="Generate Lottery Ensemble Tables",
+            function=export_ensemble_predictions,
+            required=True,
+        ),
+        CycleStep(
+            name="Build Lottery Reporting Tables",
+            function=export_lottery_reporting,
+            required=False,
+        ),
+    ]
+
+
+def run_daily_lottery_cycle() -> dict:
     cycle_start = datetime.now()
+    run_id = cycle_start.strftime("%Y%m%d_%H%M%S")
 
     print("\n======================================")
-    print("HEXAGRANDHOUSE PHASE 1 FULL LOTTERY CYCLE")
+    print("HEXAGRANDHOUSE LOTTERY DAILY CYCLE")
+    print("SQLite-first runtime mode")
     print("======================================")
-    print(f"Started: {current_timestamp()}")
-    print("Mode   : Incremental refresh + full analytics")
+    print(f"Run ID : {run_id}")
+    print(f"Started: {cycle_start.strftime('%Y-%m-%d %H:%M:%S')}")
     print("======================================\n")
 
-    logs = []
+    logs: list[dict] = []
 
-    # -----------------------------------------------------
-    # DATA LAYER
-    # -----------------------------------------------------
-
-    run_step(
-        step_name="Incremental Historical Lottery Update",
-        function=run_incremental_history_update,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Run Data Quality Checks",
-        function=run_quality_checks,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Export Lottery Features",
-        function=export_all_lottery_features,
-        logs=logs,
-    )
-
-    # -----------------------------------------------------
-    # PREDICTION LAYER
-    # -----------------------------------------------------
-
-    run_step(
-        step_name="Generate Base Predictions",
-        function=export_all_predictions,
-        logs=logs,
-    )
-
-    # -----------------------------------------------------
-    # BACKTESTING LAYER
-    # -----------------------------------------------------
-
-    run_step(
-        step_name="Backtest PowerBall Model",
-        function=export_powerball_backtest,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Backtest Lotto Model",
-        function=export_lotto_backtest,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Backtest Daily Lotto Model",
-        function=export_daily_lotto_backtest,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Backtest UK49s Model",
-        function=export_uk49s_backtest,
-        logs=logs,
-    )
-
-    # -----------------------------------------------------
-    # MODEL COMPARISON LAYER
-    # -----------------------------------------------------
-
-    run_step(
-        step_name="Compare PowerBall Models",
-        function=export_model_comparison_backtest,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Compare Lotto Models",
-        function=export_lotto_model_comparison_backtest,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Compare Daily Lotto Models",
-        function=export_daily_lotto_model_comparison_backtest,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Compare UK49s Models",
-        function=export_uk49s_model_comparison_backtest,
-        logs=logs,
-    )
-
-    # -----------------------------------------------------
-    # OPTIMIZATION LAYER
-    # -----------------------------------------------------
-
-    run_step(
-        step_name="Run PowerBall Genetic Optimizer",
-        function=run_powerball_genetic_optimizer,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Run Lotto Genetic Optimizer",
-        function=run_lotto_genetic_optimizer,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Run Daily Lotto Genetic Optimizer",
-        function=run_daily_lotto_genetic_optimizer,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Run UK49s Genetic Optimizer",
-        function=run_uk49s_genetic_optimizer,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Run Adaptive Weight Tuner",
-        function=run_adaptive_weight_tuner,
-        logs=logs,
-    )
-
-    # -----------------------------------------------------
-    # SCORING + FINAL ENSEMBLE LAYER
-    # -----------------------------------------------------
-
-    run_step(
-        step_name="Generate PowerBall Performance Dashboard",
-        function=export_model_performance_dashboard,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Generate Unified Model Performance Dashboard",
-        function=export_unified_model_performance_dashboard,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Generate Final Ensemble Predictions",
-        function=export_ensemble_predictions,
-        logs=logs,
-    )
-
-    # -----------------------------------------------------
-    # REPORTING LAYER
-    # -----------------------------------------------------
-
-    run_step(
-        step_name="Generate Executive Report",
-        function=export_executive_report,
-        logs=logs,
-    )
-
-    run_step(
-        step_name="Generate Daily Summary",
-        function=export_daily_summary,
-        logs=logs,
-    )
-
-    # -----------------------------------------------------
-    # FINALISE
-    # -----------------------------------------------------
+    for step in build_cycle_steps():
+        try:
+            logs.append(_run_step(step, run_id=run_id))
+        except Exception:
+            failed_log = logs[-1] if logs else None
+            if failed_log is None or failed_log.get("StepName") != step.name:
+                # _run_step raises after printing; add a compact failed row if nothing was appended.
+                logs.append(
+                    {
+                        "RunID": run_id,
+                        "PipelineName": PIPELINE_NAME,
+                        "StepName": step.name,
+                        "Status": "Failed",
+                        "StartedAt": current_timestamp(),
+                        "FinishedAt": current_timestamp(),
+                        "DurationSeconds": 0,
+                        "RowsProcessed": None,
+                        "ErrorMessage": "Step failed before log row could be captured.",
+                    }
+                )
+            break
 
     cycle_end = datetime.now()
+    _write_run_logs(logs)
+    status_df = _write_refresh_status(run_id, logs, cycle_start, cycle_end)
 
-    total_duration = round(
-        (
-            cycle_end - cycle_start
-        ).total_seconds(),
-        2
-    )
-
-    success_count = len([
-        x for x in logs
-        if x["Status"] == "Success"
-    ])
-
-    failure_count = len([
-        x for x in logs
-        if x["Status"] == "Failed"
-    ])
-
-    export_logs(logs)
+    success_count = int(status_df.iloc[0]["SuccessCount"])
+    failure_count = int(status_df.iloc[0]["FailureCount"])
+    duration = float(status_df.iloc[0]["DurationSeconds"])
 
     print("\n======================================")
-    print("PHASE 1 FULL LOTTERY CYCLE COMPLETE")
+    print("LOTTERY DAILY CYCLE COMPLETE")
     print("======================================")
-    print(f"Started : {cycle_start.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Run ID  : {run_id}")
     print(f"Finished: {cycle_end.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Duration: {total_duration} sec")
+    print(f"Duration: {duration} sec")
     print(f"Success : {success_count}")
     print(f"Failed  : {failure_count}")
-    print(f"Log File: {LOG_FILE}")
+    print(f"Log Tbl : {RUN_LOG_TABLE}")
     print("======================================\n")
 
     return {
+        "RunID": run_id,
+        "PipelineName": PIPELINE_NAME,
+        "Status": "Success" if failure_count == 0 else "Failed",
         "SuccessCount": success_count,
         "FailureCount": failure_count,
-        "DurationSeconds": total_duration,
-        "LogFile": str(LOG_FILE),
+        "DurationSeconds": duration,
+        "RunLogTable": RUN_LOG_TABLE,
+        "RefreshStatusTable": REFRESH_STATUS_TABLE,
     }
 
 
-# =========================================================
-# CLI
-# =========================================================
-
-def main():
-    run_daily_lottery_cycle()
+def main() -> dict:
+    return run_daily_lottery_cycle()
 
 
 if __name__ == "__main__":
