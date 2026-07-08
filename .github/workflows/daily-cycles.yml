@@ -1,8 +1,8 @@
-name: Daily HexagrandHouse Cycles
+name: Daily HexagrandHouse Refresh
 
 on:
   schedule:
-    # 04:19 AM UTC daily
+    # 04:19 UTC = 06:19 South Africa time
     - cron: "19 4 * * *"
 
   workflow_dispatch:
@@ -10,13 +10,23 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: daily-hexagrandhouse-refresh
+  cancel-in-progress: false
+
 jobs:
-  run-daily-cycles:
+  run-daily-refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      PYTHONPATH: ${{ github.workspace }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,42 +38,78 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Lottery Daily Cycle
+      - name: Show starting database size
+        run: |
+          ls -lh data/hexagrandhouse.db
+
+      - name: Run lottery daily cycle
         run: |
           python -m src.lottery.automation.run_daily_lottery_cycle
 
-      - name: Run Football Daily Cycle
+      - name: Run football daily cycle
         run: |
           python -m src.football.automation.run_daily_football_cycle
 
-      - name: Build HexagrandHouse Database
+      - name: Build slim cloud runtime database
         run: |
-          python -m src.database.build_hexagrandhouse_db
+          python tools/build_cloud_runtime_db.py
+          python tools/create_runtime_lottery_history.py
+          cp data/hexagrandhouse_cloud_runtime.db data/hexagrandhouse.db
 
-      - name: Create cloud refresh marker
+      - name: Verify cloud database size
         run: |
-          mkdir -p data
-          date -u +"%Y-%m-%d %H:%M:%S UTC" > data/last_cloud_refresh.txt
+          python - <<'PY'
+          from pathlib import Path
+
+          db = Path("data/hexagrandhouse.db")
+          size_mb = db.stat().st_size / 1024 / 1024
+
+          print(f"Cloud runtime DB size: {size_mb:.2f} MB")
+
+          if size_mb > 95:
+              raise SystemExit("Database is too large for GitHub. Refusing to commit.")
+          PY
+
+      - name: Verify key runtime tables
+        run: |
+          python - <<'PY'
+          import sqlite3
+
+          required_tables = [
+              "lottery_history",
+              "lottery_predictions",
+              "football_history",
+              "football_predictions",
+              "football_ensemble_predictions",
+              "football_top_plays",
+              "football_value_bets",
+              "platform_run_log",
+          ]
+
+          conn = sqlite3.connect("data/hexagrandhouse.db")
+
+          for table in required_tables:
+              count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+              print(f"{table}: {count}")
+
+          conn.close()
+          PY
 
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Stage deployment outputs
+      - name: Stage SQLite runtime database
         run: |
-          git add data/last_cloud_refresh.txt
+          git add data/hexagrandhouse.db
 
-          git add data/exports/final_predictions/*.xlsx || true
-          git add data/football/exports/predictions/*.xlsx || true
-          git add data/football/exports/backtesting/*.xlsx || true
-
-      - name: Commit changes if needed
+      - name: Commit database refresh if changed
         run: |
           if ! git diff --cached --quiet; then
-            git commit -m "Automated daily prediction refresh"
+            git commit -m "Automated daily SQLite refresh"
           else
-            echo "No deployment output changes to commit."
+            echo "No SQLite database changes to commit."
           fi
 
       - name: Push changes
