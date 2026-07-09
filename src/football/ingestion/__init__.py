@@ -1,0 +1,1 @@
+"""Football SQLite ingestion package."""

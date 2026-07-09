@@ -12,7 +12,7 @@ from src.data.sqlite_store import create_indexes, read_sqlite_table, replace_sql
 # SQLITE VALUE BET ENGINE
 # =========================================================
 
-SOURCE_TABLE = "football_ensemble_predictions"
+SOURCE_TABLE = "football_fixture_predictions"
 VALUE_TABLE = "football_value_bets"
 DETAIL_TABLE = "football_value_bet_details"
 SUMMARY_TABLE = "football_value_bet_summary"
@@ -22,13 +22,64 @@ NOTES_TABLE = "football_value_bet_notes"
 
 DEFAULT_LIMIT = 1000
 
+VALUE_BET_COLUMNS = [
+    "ValueRank",
+    "MatchKey",
+    "MatchDate",
+    "League",
+    "Country",
+    "Tier",
+    "HomeTeam",
+    "AwayTeam",
+    "Market",
+    "PrimaryMarketSignal",
+    "PredictedResult",
+    "ModelProbability",
+    "ConfidenceLabel",
+    "FairOdds",
+    "MinimumValueOdds",
+    "BookmakerOdds",
+    "Bookmaker",
+    "ModelEdgePct",
+    "ValueBetScore",
+    "ValueRating",
+    "ValueBetType",
+    "HasBookmakerOdds",
+    "PredictionHit",
+    "GeneratedAt",
+    "ValueGeneratedAt",
+]
 
-# =========================================================
-# HELPERS
-# =========================================================
+GROUP_SUMMARY_COLUMNS = [
+    "ValueBetCount",
+    "AverageValueBetScore",
+    "BestValueBetScore",
+    "AverageModelProbability",
+    "BestModelEdgePct",
+    "UpdatedAt",
+]
+
+SUMMARY_COLUMNS = ["Metric", "Value", "Detail", "UpdatedAt"]
+NOTES_COLUMNS = ["NoteType", "Note", "UpdatedAt"]
+
 
 def now_string() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def empty_value_bets() -> pd.DataFrame:
+    """Return an empty dataframe with a stable schema.
+
+    The reporting cycle must overwrite old value rows even when there are no
+    current fixture predictions. A zero-column dataframe can fail to replace a
+    SQLite table, leaving stale rows behind.
+    """
+
+    return pd.DataFrame(columns=VALUE_BET_COLUMNS)
+
+
+def empty_group_summary(group_col: str) -> pd.DataFrame:
+    return pd.DataFrame(columns=[group_col] + GROUP_SUMMARY_COLUMNS)
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -107,7 +158,7 @@ def build_value_bets(limit: int = DEFAULT_LIMIT) -> pd.DataFrame:
     df = load_predictions()
 
     if df.empty:
-        return pd.DataFrame()
+        return empty_value_bets()
 
     out = df.copy()
     out["ModelProbability"] = pd.to_numeric(out["EnsembleConfidenceScore"], errors="coerce").fillna(0)
@@ -132,38 +183,13 @@ def build_value_bets(limit: int = DEFAULT_LIMIT) -> pd.DataFrame:
     out["ValueGeneratedAt"] = now_string()
 
     out = out[out["ValueRating"] != "No Value"].copy()
+    if out.empty:
+        return empty_value_bets()
+
     out = out.sort_values(["ValueBetScore", "ModelProbability"], ascending=[False, False]).head(limit)
     out.insert(0, "ValueRank", range(1, len(out) + 1))
 
-    preferred = [
-        "ValueRank",
-        "MatchKey",
-        "MatchDate",
-        "League",
-        "Country",
-        "Tier",
-        "HomeTeam",
-        "AwayTeam",
-        "Market",
-        "PrimaryMarketSignal",
-        "PredictedResult",
-        "ModelProbability",
-        "ConfidenceLabel",
-        "FairOdds",
-        "MinimumValueOdds",
-        "BookmakerOdds",
-        "Bookmaker",
-        "ModelEdgePct",
-        "ValueBetScore",
-        "ValueRating",
-        "ValueBetType",
-        "HasBookmakerOdds",
-        "PredictionHit",
-        "GeneratedAt",
-        "ValueGeneratedAt",
-    ]
-
-    columns = [col for col in preferred if col in out.columns]
+    columns = [col for col in VALUE_BET_COLUMNS if col in out.columns]
     extras = [col for col in out.columns if col not in columns]
 
     return out[columns + extras].reset_index(drop=True)
@@ -171,7 +197,7 @@ def build_value_bets(limit: int = DEFAULT_LIMIT) -> pd.DataFrame:
 
 def _group_summary(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
     if df.empty or group_col not in df.columns:
-        return pd.DataFrame()
+        return empty_group_summary(group_col)
 
     rows: list[dict[str, Any]] = []
 
@@ -199,10 +225,11 @@ def build_summary(df: pd.DataFrame) -> pd.DataFrame:
                 {
                     "Metric": "ValueBets",
                     "Value": 0,
-                    "Detail": "No model-only value rows generated",
+                    "Detail": "No current model-only value rows generated",
                     "UpdatedAt": now_string(),
                 }
-            ]
+            ],
+            columns=SUMMARY_COLUMNS,
         )
 
     return pd.DataFrame(
@@ -213,7 +240,8 @@ def build_summary(df: pd.DataFrame) -> pd.DataFrame:
             {"Metric": "AverageValueBetScore", "Value": round(float(pd.to_numeric(df["ValueBetScore"], errors="coerce").mean()), 2), "Detail": "Mean model-only value score", "UpdatedAt": now_string()},
             {"Metric": "BestValueBetScore", "Value": round(float(pd.to_numeric(df["ValueBetScore"], errors="coerce").max()), 2), "Detail": "Highest model-only value score", "UpdatedAt": now_string()},
             {"Metric": "BookmakerOddsCoverage", "Value": 0, "Detail": "Bookmaker odds are not yet supplied to SQLite", "UpdatedAt": now_string()},
-        ]
+        ],
+        columns=SUMMARY_COLUMNS,
     )
 
 
@@ -226,16 +254,17 @@ def build_notes() -> pd.DataFrame:
                 "UpdatedAt": now_string(),
             },
             {
-                "NoteType": "Next Step",
-                "Note": "When bookmaker odds are migrated, replace ModelEdgePct with true probability-versus-implied-odds edge.",
+                "NoteType": "Current Data",
+                "Note": "When there are no upcoming fixture predictions, this process writes an empty current table so stale rows are removed.",
                 "UpdatedAt": now_string(),
             },
             {
                 "NoteType": "Runtime",
-                "Note": "The value engine reads football_ensemble_predictions and writes SQLite tables only.",
+                "Note": "The value engine reads football_fixture_predictions and writes SQLite tables only.",
                 "UpdatedAt": now_string(),
             },
-        ]
+        ],
+        columns=NOTES_COLUMNS,
     )
 
 

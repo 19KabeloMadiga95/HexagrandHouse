@@ -8,6 +8,7 @@ from typing import Callable, Any
 import pandas as pd
 
 from src.data.sqlite_store import append_sqlite_table, create_indexes, replace_sqlite_table
+from src.lottery.ingestion.sqlite_lottery_ingestion import update_lottery_history_sqlite
 from src.lottery.features.export_lottery_features import export_all_lottery_features
 from src.lottery.models.export_all_predictions import export_all_predictions
 from src.lottery.optimization.ensemble_prediction_engine import export_ensemble_predictions
@@ -177,6 +178,11 @@ def build_cycle_steps() -> list[CycleStep]:
     """
 
     return [
+        CycleStep(
+            name="Update Lottery History from Web",
+            function=update_lottery_history_sqlite,
+            required=True,
+        ),
         CycleStep(
             name="Build Lottery Feature Tables",
             function=export_all_lottery_features,

@@ -15,6 +15,27 @@ configure_page("Home", "🏠")
 refresh_chip()
 
 
+def current_football_only(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    date_col = None
+
+    for col in ["FixtureDate", "MatchDate", "Date"]:
+        if col in out.columns:
+            date_col = col
+            break
+
+    if date_col is None:
+        return pd.DataFrame()
+
+    out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
+    today = pd.Timestamp.today().normalize()
+
+    return out[out[date_col].notna() & (out[date_col] >= today)].copy()
+
+
 def clean_lottery_predictions(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -40,17 +61,22 @@ def clean_lottery_predictions(df: pd.DataFrame) -> pd.DataFrame:
 def load_home():
     lottery_predictions = clean_lottery_predictions(cached_table("lottery_predictions", limit=400))
     lottery_results = sort_by_date(cached_table("lottery_history", limit=200))
-    football_picks = sort_by_strength(cached_table("football_top_plays", limit=500))
-    if football_picks.empty:
-        football_picks = sort_by_strength(cached_table("football_predictions", limit=500))
-    football_value = sort_by_strength(cached_table("football_value_bets", limit=500))
+    # Public football cards must only use current/future fixture picks.
+    # Do not fall back to historical football_predictions/top_plays here,
+    # because that is how stale match cards sneak back onto the website.
+    football_picks = sort_by_strength(
+        current_football_only(cached_table("football_fixture_predictions", limit=500))
+    )
+    football_value = sort_by_strength(
+        current_football_only(cached_table("football_value_bets", limit=500))
+    )
     return lottery_predictions, lottery_results, football_picks, football_value
 
 lottery_predictions, lottery_results, football_picks, football_value = load_home()
 
 latest_draw = latest_label(lottery_results, "DrawDate", "GameName")
 lottery_count = count_rows("lottery_predictions")
-football_count = count_rows("football_top_plays") or count_rows("football_predictions")
+football_count = len(football_picks)
 result_count = count_rows("lottery_history") + count_rows("football_history")
 
 hero(

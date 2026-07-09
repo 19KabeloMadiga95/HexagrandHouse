@@ -12,7 +12,7 @@ from src.data.sqlite_store import create_indexes, read_sqlite_table, replace_sql
 # SQLITE TOP PLAYS REPORT
 # =========================================================
 
-SOURCE_TABLE = "football_ensemble_predictions"
+SOURCE_TABLE = "football_fixture_predictions"
 TOP_PLAYS_TABLE = "football_top_plays"
 SUMMARY_TABLE = "football_top_plays_summary"
 LEAGUE_TABLE = "football_top_plays_by_league"
@@ -22,9 +22,60 @@ NOTES_TABLE = "football_top_plays_notes"
 
 DEFAULT_LIMIT = 500
 
+TOP_PLAY_COLUMNS = [
+    "TopPlayRank",
+    "MatchKey",
+    "MatchDate",
+    "League",
+    "Country",
+    "Tier",
+    "HomeTeam",
+    "AwayTeam",
+    "Market",
+    "PrimaryMarketSignal",
+    "PredictedResult",
+    "ModelProbability",
+    "ConfidenceScore",
+    "EnsembleConfidenceScore",
+    "ConfidenceLabel",
+    "ValueScore",
+    "ValueRating",
+    "TopPlayScore",
+    "RankReason",
+    "PredictionHit",
+    "GeneratedAt",
+    "ReportGeneratedAt",
+]
+
+GROUP_SUMMARY_COLUMNS = [
+    "TopPlayCount",
+    "AverageTopPlayScore",
+    "BestTopPlayScore",
+    "EliteCount",
+    "UpdatedAt",
+]
+
+SUMMARY_COLUMNS = ["Metric", "Value", "Detail", "UpdatedAt"]
+NOTES_COLUMNS = ["NoteType", "Note", "UpdatedAt"]
+
 
 def now_string() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def empty_top_plays() -> pd.DataFrame:
+    """Return an empty dataframe with a stable schema.
+
+    This is important because pandas cannot replace a SQLite table from a
+    zero-column dataframe. Without this, old football_top_plays/value tables
+    can survive when there are no upcoming fixtures.
+    """
+
+    return pd.DataFrame(columns=TOP_PLAY_COLUMNS)
+
+
+def empty_group_summary(group_col: str) -> pd.DataFrame:
+    return pd.DataFrame(columns=[group_col] + GROUP_SUMMARY_COLUMNS)
 
 
 def safe_float(value: Any, default: float = 0.0) -> float:
@@ -90,7 +141,7 @@ def build_top_plays(limit: int = DEFAULT_LIMIT) -> pd.DataFrame:
     df = load_predictions()
 
     if df.empty:
-        return pd.DataFrame()
+        return empty_top_plays()
 
     out = df.copy()
 
@@ -123,39 +174,14 @@ def build_top_plays(limit: int = DEFAULT_LIMIT) -> pd.DataFrame:
     out.insert(0, "TopPlayRank", range(1, len(out) + 1))
     out["ReportGeneratedAt"] = now_string()
 
-    preferred = [
-        "TopPlayRank",
-        "MatchKey",
-        "MatchDate",
-        "League",
-        "Country",
-        "Tier",
-        "HomeTeam",
-        "AwayTeam",
-        "Market",
-        "PrimaryMarketSignal",
-        "PredictedResult",
-        "ModelProbability",
-        "ConfidenceScore",
-        "EnsembleConfidenceScore",
-        "ConfidenceLabel",
-        "ValueScore",
-        "ValueRating",
-        "TopPlayScore",
-        "RankReason",
-        "PredictionHit",
-        "GeneratedAt",
-        "ReportGeneratedAt",
-    ]
-
-    columns = [col for col in preferred if col in out.columns]
+    columns = [col for col in TOP_PLAY_COLUMNS if col in out.columns]
     extras = [col for col in out.columns if col not in columns]
     return out[columns + extras].reset_index(drop=True)
 
 
 def _group_summary(top_df: pd.DataFrame, group_col: str) -> pd.DataFrame:
     if top_df.empty or group_col not in top_df.columns:
-        return pd.DataFrame()
+        return empty_group_summary(group_col)
 
     rows: list[dict[str, Any]] = []
 
@@ -177,7 +203,7 @@ def _group_summary(top_df: pd.DataFrame, group_col: str) -> pd.DataFrame:
 
 def build_summary(top_df: pd.DataFrame) -> pd.DataFrame:
     if top_df.empty:
-        return pd.DataFrame([_summary_metric("TopPlays", 0, "No top plays generated")])
+        return pd.DataFrame([_summary_metric("TopPlays", 0, "No current top plays generated")], columns=SUMMARY_COLUMNS)
 
     return pd.DataFrame(
         [
@@ -186,7 +212,8 @@ def build_summary(top_df: pd.DataFrame) -> pd.DataFrame:
             _summary_metric("Markets", int(top_df["Market"].nunique()) if "Market" in top_df.columns else 0, "Distinct markets in top plays"),
             _summary_metric("AverageTopPlayScore", round(float(pd.to_numeric(top_df["TopPlayScore"], errors="coerce").mean()), 2), "Average top-play score"),
             _summary_metric("BestTopPlayScore", round(float(pd.to_numeric(top_df["TopPlayScore"], errors="coerce").max()), 2), "Highest top-play score"),
-        ]
+        ],
+        columns=SUMMARY_COLUMNS,
     )
 
 
@@ -195,15 +222,16 @@ def build_notes() -> pd.DataFrame:
         [
             {
                 "NoteType": "Source",
-                "Note": "Top plays are ranked from football_ensemble_predictions in SQLite.",
+                "Note": "Top plays are ranked from current/future fixture predictions in SQLite.",
                 "UpdatedAt": now_string(),
             },
             {
                 "NoteType": "Runtime",
-                "Note": "This report does not require Excel workbooks or local exported files.",
+                "Note": "When there are no upcoming fixtures, this process writes an empty current table so stale rows are removed.",
                 "UpdatedAt": now_string(),
             },
-        ]
+        ],
+        columns=NOTES_COLUMNS,
     )
 
 

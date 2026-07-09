@@ -79,6 +79,8 @@ jobs:
               "lottery_history",
               "lottery_predictions",
               "football_history",
+              "football_fixtures",
+              "football_fixture_predictions",
               "football_predictions",
               "football_ensemble_predictions",
               "football_top_plays",
@@ -94,6 +96,10 @@ jobs:
 
           conn.close()
           PY
+
+      - name: Check runtime data freshness
+        run: |
+          python tools/check_data_freshness.py --max-lottery-lag-days 4
 
       - name: Configure Git
         run: |

@@ -8,8 +8,10 @@ from typing import Any, Callable
 import pandas as pd
 
 from src.data.sqlite_store import append_sqlite_table, create_indexes, replace_sqlite_table
+from src.football.ingestion.sqlite_football_ingestion import update_football_fixtures_sqlite
 from src.football.features.export_football_features import export_football_features
 from src.football.models.export_football_models import export_football_models
+from src.football.predictions.sqlite_fixture_predictions import export_fixture_predictions
 from src.football.reporting.export_football_reporting import export_football_reporting
 
 
@@ -179,14 +181,24 @@ def _write_refresh_status(
 def build_cycle_steps() -> list[CycleStep]:
     return [
         CycleStep(
+            name="Update Football Fixtures from Web",
+            function=update_football_fixtures_sqlite,
+            required=False,
+        ),
+        CycleStep(
             name="Build Football Feature Tables",
             function=export_football_features,
             required=True,
         ),
         CycleStep(
-            name="Generate Football Model Tables",
+            name="Generate Football Historical Model Tables",
             function=export_football_models,
             required=True,
+        ),
+        CycleStep(
+            name="Generate Football Fixture Picks",
+            function=export_fixture_predictions,
+            required=False,
         ),
         CycleStep(
             name="Build Football Reporting Tables",

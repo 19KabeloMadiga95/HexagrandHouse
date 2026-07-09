@@ -4,6 +4,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+import pandas as pd
 import streamlit as st
 
 from src.app.utils.page import configure_page, refresh_chip
@@ -19,13 +20,40 @@ from src.app.components.website import (
 configure_page("Football Picks", "⚽")
 refresh_chip()
 
+
+def current_football_only(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    date_col = None
+
+    for col in ["FixtureDate", "MatchDate", "Date"]:
+        if col in out.columns:
+            date_col = col
+            break
+
+    if date_col is None:
+        return pd.DataFrame()
+
+    out[date_col] = pd.to_datetime(out[date_col], errors="coerce")
+    today = pd.Timestamp.today().normalize()
+
+    return out[out[date_col].notna() & (out[date_col] >= today)].copy()
+
 @st.cache_data(ttl=300, show_spinner=False)
 def load_football():
-    top = sort_by_strength(cached_table("football_top_plays", limit=500))
-    value = sort_by_strength(cached_table("football_value_bets", limit=1000))
-    predictions = sort_by_strength(cached_table("football_predictions", limit=5000))
-    if top.empty:
-        top = predictions
+    # Website football must be current/future only.
+    # Historical football_predictions and football_top_plays stay available in
+    # admin/reporting, but they should not drive public match cards.
+    fixture_predictions = sort_by_strength(
+        current_football_only(cached_table("football_fixture_predictions", limit=500))
+    )
+    value = sort_by_strength(
+        current_football_only(cached_table("football_value_bets", limit=1000))
+    )
+    top = fixture_predictions
+    predictions = fixture_predictions
     return top, value, predictions
 
 top, value, predictions = load_football()
@@ -46,7 +74,7 @@ hero(
         {"value": f"{len(view_top):,}", "label": "Top picks"},
         {"value": f"{len(view_value):,}", "label": "Value picks"},
         {"value": f"{max(len(leagues)-1, 0):,}", "label": "Leagues"},
-        {"value": f"{count_rows('football_history'):,}", "label": "Past matches"},
+        {"value": f"{count_rows('football_fixtures'):,}", "label": "Upcoming"},
     ],
 )
 
@@ -54,7 +82,7 @@ mini_cards([
     {"icon": "⚽", "label": "Current view", "value": selected_league, "note": "selected league"},
     {"icon": "🔥", "label": "Top picks", "value": f"{len(view_top):,}", "note": "shortlist"},
     {"icon": "💎", "label": "Value picks", "value": f"{len(view_value):,}", "note": "extra review"},
-    {"icon": "📋", "label": "Past matches", "value": f"{count_rows('football_history'):,}", "note": "loaded results"},
+    {"icon": "📋", "label": "Upcoming", "value": f"{count_rows('football_fixtures'):,}", "note": "fixtures"},
 ])
 
 left, right = st.columns([1.05, .95], gap="large")
