@@ -134,6 +134,60 @@ def result_row(row):
     )
 
 
+def lottery_result_group_card(group: pd.DataFrame):
+    if group is None or group.empty:
+        return
+
+    group = group.copy()
+    if "DrawDate" in group.columns:
+        group["_card_draw_date"] = pd.to_datetime(group["DrawDate"], errors="coerce")
+        group["_card_draw_day"] = group["_card_draw_date"].dt.date
+        latest_date = group["_card_draw_date"].max()
+    else:
+        latest_date = None
+
+    dedupe_subset = [
+        col
+        for col in [
+            "_card_draw_day",
+            "GameGroup",
+            "SubGameDisplay",
+            "GameName",
+            "DrawType",
+            "N1",
+            "N2",
+            "N3",
+            "N4",
+            "N5",
+            "N6",
+            "Bonus",
+        ]
+        if col in group.columns
+    ]
+    if dedupe_subset:
+        group = group.drop_duplicates(subset=dedupe_subset, keep="first")
+
+    first = group.iloc[0]
+    game_group = first.get("GameGroup", first.get("GameName", first.get("GameFamily", "Lottery")))
+    count_label = f"{len(group)} draw" if len(group) == 1 else f"{len(group)} draws"
+
+    row_html = []
+    for _, row in group.iterrows():
+        subgame = row.get("SubGameDisplay", row.get("GameName", row.get("GameFamily", "Lottery")))
+        draw_type = row.get("DrawType", "")
+        draw_type_html = f'<small>{safe(draw_type)}</small>' if _valid_meta(draw_type) else ""
+        row_html.append(
+            f'<div class="hh-result-group-row"><div><b>{safe(subgame)}</b>{draw_type_html}</div>{number_balls(row)}</div>'
+        )
+
+    _html(
+        f'<article class="hh-result-group"><div class="hh-result-group-head"><div>'
+        f'<div class="hh-card-kicker">Lottery result</div><h3>{safe(game_group)}</h3>'
+        f'<span>{safe(date_label(latest_date))}</span></div><div class="hh-result-count">{safe(count_label)}</div></div>'
+        f'<div class="hh-result-group-stack">{"".join(row_html)}</div></article>'
+    )
+
+
 def football_pick(row, rank: int = 1):
     home = row.get("HomeTeam", row.get("Home", "Home"))
     away = row.get("AwayTeam", row.get("Away", "Away"))
