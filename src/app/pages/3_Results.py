@@ -22,7 +22,7 @@ from src.app.components.website import (
     page_footer,
 )
 
-configure_page("Results", "📋")
+configure_page("Results Archive", "▣")
 refresh_chip()
 
 GAME_FILTER_OPTIONS = [
@@ -223,10 +223,10 @@ def load_results():
 lottery, football, scored = load_results()
 
 hero(
-    "Recent results.",
-    "A clean historical view for lottery draws and football outcomes without opening spreadsheets.",
-    eyebrow="Results",
-    chips=["Historical draws", "Grouped results", "Simple filters"],
+    "Results Archive",
+    "Explore historical lottery and football results with powerful search, grouped draws, and last-year filters.",
+    eyebrow="Historical data",
+    chips=["Grouped lottery results", "Last N selector", "1-year date range", "Football history"],
     metrics=[
         {"value": f"{count_rows('lottery_history'):,}", "label": "Lottery results"},
         {"value": f"{count_rows('football_history'):,}", "label": "Football results"},
@@ -246,7 +246,7 @@ min_date, max_date = _date_bounds(lottery)
 
 filter_cols = st.columns([1.15, 1, 1.35], gap="medium")
 with filter_cols[0]:
-    selected_game = st.selectbox("Lottery game", GAME_FILTER_OPTIONS, index=0)
+    selected_game = st.selectbox("Game", GAME_FILTER_OPTIONS, index=0)
 with filter_cols[1]:
     last_n = st.selectbox("Last results", list(range(5, 55, 5)), index=0)
 with filter_cols[2]:
@@ -267,7 +267,7 @@ lottery_groups = grouped_lottery_results(lottery_view, limit=int(last_n))
 left, right = st.columns([1.05, .95], gap="large")
 
 with left:
-    section_label("Lottery results", f"Last {last_n} grouped result cards for {selected_game}.")
+    section_label("Lottery Results", f"Last {last_n} grouped result cards for {selected_game}.")
     if not lottery_groups:
         empty_message("No lottery results", "No draws match the selected filters.")
     else:
@@ -275,7 +275,7 @@ with left:
             lottery_result_group_card(group)
 
 with right:
-    section_label("Football results", "Recent football rows in a simple table.")
+    section_label("Football Results", "Recent football rows in a simple table.")
     friendly_table(
         football,
         ["MatchDate", "Season", "League", "HomeTeam", "AwayTeam", "HomeGoals", "AwayGoals", "Result"],
@@ -283,7 +283,7 @@ with right:
         limit=80,
     )
 
-with st.expander("Show filtered lottery table", expanded=False):
+with st.expander("Archive table", expanded=False):
     friendly_table(
         lottery_view,
         ["DrawDate", "GameGroup", "SubGameDisplay", "GameName", "DrawType", "N1", "N2", "N3", "N4", "N5", "N6", "Bonus"],

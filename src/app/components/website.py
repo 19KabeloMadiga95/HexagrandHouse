@@ -25,6 +25,16 @@ def _html(markup: str) -> None:
     st.markdown(compact, unsafe_allow_html=True)
 
 
+
+def _highlight_title(title: str) -> str:
+    text = safe(title, "")
+    if not text:
+        return ""
+    parts = text.rsplit(" ", 1)
+    if len(parts) == 2 and len(parts[1]) > 2:
+        return f"{parts[0]} <em>{parts[1]}</em>"
+    return text
+
 def num_label(value):
     try:
         return f"{int(float(value)):02}"
@@ -47,7 +57,7 @@ def section_label(title: str, subtitle: str = ""):
     _html(f'<div class="hh-section-head"><h2>{safe(title)}</h2>{sub}</div>')
 
 
-def hero(title: str, subtitle: str, eyebrow: str = "HEXAGRANDHOUSE", chips: list[str] | None = None, metrics: list[dict] | None = None):
+def hero(title: str, subtitle: str, eyebrow: str = "HEXAGRANDBET", chips: list[str] | None = None, metrics: list[dict] | None = None):
     chips = chips or []
     metrics = metrics or []
     chip_html = "".join(f'<span>{safe(c)}</span>' for c in chips if safe(c, ""))
@@ -57,7 +67,7 @@ def hero(title: str, subtitle: str, eyebrow: str = "HEXAGRANDHOUSE", chips: list
     )
     _html(
         f'<section class="hh-hero"><div class="hh-hero-copy"><div class="hh-eyebrow">{safe(eyebrow)}</div>'
-        f'<h1>{safe(title)}</h1><p>{safe(subtitle)}</p><div class="hh-chip-row">{chip_html}</div></div>'
+        f'<h1>{_highlight_title(title)}</h1><p>{safe(subtitle)}</p><div class="hh-chip-row">{chip_html}</div></div>'
         f'<div class="hh-hero-stats">{metric_html}</div></section>'
     )
 
@@ -239,4 +249,4 @@ def friendly_table(df: pd.DataFrame, columns: list[str], height: int = 300, limi
 
 
 def page_footer():
-    _html('<div class="hh-footer"><b>HexagrandHouse</b><span>For entertainment and review only. No outcome is guaranteed.</span></div>')
+    _html('<div class="hh-footer"><b>HexaGrandBet</b><span>18+ Play responsibly. Statistical analysis and historical data are not guarantees of winning.</span></div>')

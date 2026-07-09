@@ -25,7 +25,7 @@ compact_header(
 )
 
 kpi_grid([
-    {"icon": "🗄️", "title": "Runtime source", "value": "SQLite", "sub": "data/hexagrandhouse.db"},
+    {"icon": "🗄️", "title": "Runtime source", "value": "SQLite", "sub": "runtime SQLite DB"},
     {"icon": "☁️", "title": "Cloud mode", "value": "Read-only", "sub": "safe deployment"},
     {"icon": "📦", "title": "Exports", "value": "Optional", "sub": "not runtime"},
     {"icon": "🧭", "title": "Architecture", "value": "v4", "sub": "database-first"},

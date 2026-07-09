@@ -21,7 +21,7 @@ from src.app.components.website import (
     page_footer,
 )
 
-configure_page("Lottery Picks", "🎲")
+configure_page("Lottery Picks", "✤")
 refresh_chip()
 
 PRIMARY_GAME_OPTIONS = [
@@ -219,21 +219,21 @@ def load_lottery():
 
 
 predictions, results = load_lottery()
-selected_game = st.selectbox("Choose a game", PRIMARY_GAME_OPTIONS, index=0)
+selected_game = st.radio("Choose a game", PRIMARY_GAME_OPTIONS, index=0, horizontal=True)
 
 view_predictions = filter_game_group(predictions, selected_game)
 view_results = filter_game_group(results, selected_game)
 latest_result_groups = grouped_recent_results(view_results, limit=5)
 
 hero(
-    "Lottery picks.",
-    "Numbers are shown like tickets, with recent draws beside them. Related Lotto and PowerBall results are grouped by draw date.",
-    eyebrow="Lottery",
-    chips=[latest_label(results, "DrawDate", "GameName"), "Current rules", "Entertainment only"],
+    "Lottery Picks",
+    "Data-driven lottery tickets based on statistical analysis, historical patterns, and grouped latest results.",
+    eyebrow="Lottery intelligence",
+    chips=[latest_label(results, "DrawDate", "GameName"), "Grouped Lotto results", "Current rules", "Entertainment only"],
     metrics=[
-        {"value": len(PRIMARY_GAME_OPTIONS) - 1, "label": "Game views"},
+        {"value": len(PRIMARY_GAME_OPTIONS) - 1, "label": "Games covered"},
         {"value": f"{len(view_predictions):,}", "label": "Picks"},
-        {"value": f"{len(latest_result_groups):,}", "label": "Result cards"},
+        {"value": latest_label(results, "DrawDate", "GameName"), "label": "Latest draw"},
         {"value": "Ready", "label": "Status"},
     ],
 )
@@ -245,22 +245,22 @@ mini_cards([
     {"icon": "🧾", "label": "History", "value": f"{count_rows('lottery_history'):,}", "note": "stored results"},
 ])
 
-left, right = st.columns([1, 1], gap="medium")
-
-with left:
-    section_label("Featured tickets", "First ten tickets for this view.")
-    if view_predictions.empty:
-        empty_message("No tickets available", "Try another game or wait for the next refresh.")
-    else:
-        for i, (_, row) in enumerate(view_predictions.head(10).iterrows(), 1):
+section_label("Featured Tickets", "Premium ticket cards for the selected game view.")
+if view_predictions.empty:
+    empty_message("No tickets available", "Try another game or wait for the next refresh.")
+else:
+    cols = st.columns(4, gap="medium")
+    for i, (_, row) in enumerate(view_predictions.head(8).iterrows(), 1):
+        with cols[(i - 1) % 4]:
             lottery_ticket(row, i)
 
-with right:
-    section_label("Latest results", "Last five grouped result cards for the selected game view.")
-    if not latest_result_groups:
-        empty_message("No result history", "Results are not available for this game yet.")
-    else:
-        for group in latest_result_groups:
+section_label("Latest Results", "Last five grouped result cards for the selected game view.")
+if not latest_result_groups:
+    empty_message("No result history", "Results are not available for this game yet.")
+else:
+    cols = st.columns(2, gap="medium")
+    for i, group in enumerate(latest_result_groups):
+        with cols[i % 2]:
             lottery_result_group_card(group)
 
 with st.expander("Show results table", expanded=False):

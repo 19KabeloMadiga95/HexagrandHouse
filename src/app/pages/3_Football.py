@@ -59,17 +59,17 @@ def load_football():
 top, value, predictions = load_football()
 league_source = top if not top.empty else predictions
 leagues = unique_options(league_source, "League")
-selected_league = st.selectbox("Choose a league", leagues, index=0)
+selected_league = st.selectbox("League", leagues, index=0)
 
 view_top = filter_value(top, "League", selected_league)
 view_value = filter_value(value, "League", selected_league)
 view_predictions = filter_value(predictions, "League", selected_league)
 
 hero(
-    "Football picks.",
-    "A simple match list for reviewing suggested football picks. Start with the cards, then open the table only when you need more detail.",
-    eyebrow="Football",
-    chips=["Top matches", "Value view", "Simple cards"],
+    "Football Picks",
+    "Review top football matches, probabilities, and value bets curated from current fixture data only.",
+    eyebrow="Football intelligence",
+    chips=["Current fixtures", "Value bets", "No stale cards", "Simple review"],
     metrics=[
         {"value": f"{len(view_top):,}", "label": "Top picks"},
         {"value": f"{len(view_value):,}", "label": "Value picks"},
@@ -88,20 +88,22 @@ mini_cards([
 left, right = st.columns([1.05, .95], gap="large")
 
 with left:
-    section_label("Match cards", "Review the strongest available football picks.")
+    section_label("Match Cards", "Review the strongest available football picks.")
     card_df = view_top if not view_top.empty else view_predictions
     if card_df.empty:
-        empty_message("No match picks yet", "Football picks will populate when data is available.")
+        empty_message("No match picks yet", "Football picks will populate when upcoming fixture data is available.")
     else:
+        cols = st.columns(2, gap="medium")
         for i, (_, row) in enumerate(card_df.head(8).iterrows(), 1):
-            football_pick(row, i)
+            with cols[(i - 1) % 2]:
+                football_pick(row, i)
 
 with right:
-    section_label("Value picks", "A second view for matches that may be worth comparing.")
+    section_label("Value Picks", "A second view for matches that may be worth comparing.")
     if view_value.empty:
         empty_message("No value picks", "This area will populate when value data is available.")
     else:
-        for i, (_, row) in enumerate(view_value.head(5).iterrows(), 1):
+        for i, (_, row) in enumerate(view_value.head(6).iterrows(), 1):
             football_pick(row, i)
 
 with st.expander("Show simple football table", expanded=False):

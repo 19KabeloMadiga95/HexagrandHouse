@@ -93,7 +93,7 @@ def render_sidebar_branding():
 <div class="hgh-sidebar-brand">
     <div class="hgh-sidebar-logo">H</div>
     <div>
-        <div class="hgh-sidebar-title">HEXAGRANDHOUSE</div>
+        <div class="hgh-sidebar-title">HEXAGRANDBET</div>
         <div class="hgh-sidebar-subtitle">DATA. INSIGHT. PLAY SMART.</div>
     </div>
 </div>

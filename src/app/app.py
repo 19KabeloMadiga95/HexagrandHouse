@@ -8,5 +8,5 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.app.utils.page import configure_page
 
-configure_page("HexagrandHouse", "🏠")
+configure_page("HexaGrandBet", "◆")
 st.switch_page("pages/1_Home.py")

@@ -5,6 +5,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 import streamlit as st
 from src.app.utils.page import configure_page
-configure_page("HexagrandHouse", "🏠")
+configure_page("HexaGrandBet", "🏠")
 st.info("This backstage page is hidden in the website view.")
 st.page_link("pages/1_Home.py", label="Back to Home", icon="🏠")

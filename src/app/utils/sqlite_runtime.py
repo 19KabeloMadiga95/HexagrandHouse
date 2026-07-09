@@ -175,3 +175,40 @@ def safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+# Compatibility helpers used by backstage/admin pages.
+def sort_by_best_date(df: pd.DataFrame, ascending: bool = False) -> pd.DataFrame:
+    return sort_by_date(df, ascending=ascending)
+
+
+def sort_by_confidence(df: pd.DataFrame, ascending: bool = False) -> pd.DataFrame:
+    return sort_by_strength(df, ascending=ascending)
+
+
+def filter_by_column_value(df: pd.DataFrame, column: str, value: str) -> pd.DataFrame:
+    return filter_value(df, column, value)
+
+
+def latest_value(df: pd.DataFrame, date_col: str = "Date") -> str:
+    if df is None or df.empty:
+        return "-"
+    out = sort_by_date(df)
+    if out.empty:
+        return "-"
+    row = out.iloc[0]
+    return format_date(row.get(date_col, None))
+
+
+def show_database_download(df: pd.DataFrame, filename: str = "data.csv") -> None:
+    if df is None or df.empty:
+        return
+    try:
+        st.download_button(
+            "Download CSV",
+            df.to_csv(index=False).encode("utf-8"),
+            file_name=filename,
+            mime="text/csv",
+            use_container_width=True,
+        )
+    except Exception:
+        pass
