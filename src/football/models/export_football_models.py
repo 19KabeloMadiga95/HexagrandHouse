@@ -66,7 +66,7 @@ def export_all_football_models() -> list[dict]:
 
 
 def export_football_models() -> list[dict]:
-    """Backward-compatible callable used by the daily football automation cycle."""
+    """Backward-compatible callable used by the heavy football model rebuild cycle."""
     return export_all_football_models()
 
 

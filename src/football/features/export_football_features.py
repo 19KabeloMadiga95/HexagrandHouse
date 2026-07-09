@@ -14,7 +14,7 @@ def export_football_features() -> pd.DataFrame:
     """
     Build and persist football feature tables in SQLite.
 
-    This callable is used by the daily football automation cycle.
+    This callable is used by the heavy football model rebuild cycle.
     It also keeps the module runnable with:
         python -m src.football.features.export_football_features
     """
