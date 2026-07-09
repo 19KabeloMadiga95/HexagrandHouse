@@ -449,3 +449,49 @@ button[kind="secondary"], .stDownloadButton button { border-radius: 14px !import
     background:
         linear-gradient(135deg, rgba(247, 200, 86, .31), rgba(245, 158, 11, .15)) !important;
 }
+
+
+/* Final HexaGrandBet background + collapsed-sidebar fix */
+html,
+body,
+.stApp,
+[data-testid="stAppViewContainer"] {
+    min-height: 100vh !important;
+}
+
+[data-testid="stAppViewContainer"] > .main,
+.main .block-container {
+    background: transparent !important;
+}
+
+/* When Streamlit sidebar is collapsed, do not keep the custom fixed-width gutter. */
+section[data-testid="stSidebar"][aria-expanded="false"],
+[data-testid="stSidebar"][aria-expanded="false"] {
+    min-width: 0 !important;
+    max-width: 0 !important;
+    width: 0 !important;
+    flex-basis: 0 !important;
+    margin-left: 0 !important;
+    margin-right: 0 !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    border-right: 0 !important;
+    box-shadow: none !important;
+    overflow: hidden !important;
+    transform: translateX(-100%) !important;
+}
+
+section[data-testid="stSidebar"][aria-expanded="false"] > div,
+[data-testid="stSidebar"][aria-expanded="false"] > div {
+    display: none !important;
+}
+
+/* Keep the restore control available after collapse. */
+[data-testid="collapsedControl"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="stSidebarCollapseButton"] {
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
+    z-index: 999999 !important;
+}

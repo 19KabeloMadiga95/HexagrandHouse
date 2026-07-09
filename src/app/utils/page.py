@@ -3,6 +3,7 @@ import base64
 import html
 import streamlit as st
 
+
 APP_ROOT = Path(__file__).resolve().parents[1]
 BRAND_NAME = "HexaGrandBet"
 BRAND_TAGLINE = "Lottery & football intelligence"
@@ -112,6 +113,57 @@ def render_sidebar(active_label: str | None = None) -> None:
             unsafe_allow_html=True,
         )
 
+def inject_page_background() -> None:
+    """Inject the approved HexaGrandBet background image behind every page.
+
+    Expected file:
+        src/app/assets/hexagrandbet_bg.png
+    """
+    bg_path = APP_ROOT / "assets" / "hexagrandbet_bg.png"
+
+    if not bg_path.exists():
+        return
+
+    encoded = base64.b64encode(bg_path.read_bytes()).decode("ascii")
+
+    st.markdown(
+        f"""
+        <style>
+        html,
+        body,
+        .stApp,
+        [data-testid="stAppViewContainer"] {{
+            background:
+                linear-gradient(rgba(2, 8, 23, 0.78), rgba(2, 8, 23, 0.88)),
+                url("data:image/png;base64,{encoded}") !important;
+            background-size: cover !important;
+            background-position: center center !important;
+            background-repeat: no-repeat !important;
+            background-attachment: fixed !important;
+        }}
+
+        [data-testid="stAppViewContainer"] > .main,
+        .main .block-container {{
+            background: transparent !important;
+        }}
+
+        [data-testid="stHeader"] {{
+            background: transparent !important;
+        }}
+
+        [data-testid="stToolbar"] {{
+            right: 1rem;
+        }}
+
+        section[data-testid="stSidebar"] {{
+            background: rgba(2, 8, 23, 0.94) !important;
+            backdrop-filter: blur(18px);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
 
 def refresh_chip(label: str = "Updated", value: str | None = None) -> None:
     st.markdown(
@@ -133,4 +185,5 @@ def configure_page(title: str = BRAND_NAME, icon: str = "◆") -> None:
         initial_sidebar_state="expanded",
     )
     load_css()
+    inject_page_background()
     render_sidebar(title)
