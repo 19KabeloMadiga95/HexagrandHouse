@@ -50,6 +50,9 @@ FULL_COPY_TABLES = [
 
     # Football small/reporting/runtime tables
     "football_fixtures",
+    "football_fixture_predictions",
+    "football_fixture_prediction_summary",
+    "football_fixture_ingestion_status",
     "football_feature_summary",
     "football_feature_dictionary",
     "football_model_summary",
