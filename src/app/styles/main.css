@@ -495,3 +495,54 @@ section[data-testid="stSidebar"][aria-expanded="false"] > div,
     opacity: 1 !important;
     z-index: 999999 !important;
 }
+
+/* Ordered responsive card grid: keeps desktop polish and mobile sequence (#1, #2, #3...) */
+.hgb-card-grid {
+    display: grid;
+    gap: .95rem;
+    width: 100%;
+    margin: .3rem 0 1rem;
+    align-items: stretch;
+}
+
+.hgb-card-grid > * {
+    height: 100%;
+}
+
+.hgb-card-grid-1 { grid-template-columns: 1fr; }
+.hgb-card-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.hgb-card-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.hgb-card-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+@media (max-width: 1180px) {
+    .hgb-card-grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hgb-card-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+    .hgb-card-grid,
+    .hgb-card-grid-1,
+    .hgb-card-grid-2,
+    .hgb-card-grid-3,
+    .hgb-card-grid-4 {
+        grid-template-columns: 1fr !important;
+        gap: .78rem;
+    }
+
+    .hh-section-head {
+        display: block !important;
+    }
+
+    .hh-section-head p {
+        margin-top: .22rem !important;
+    }
+
+    .hh-ticket,
+    .hh-football-card,
+    .hh-result-row,
+    .hh-result-group,
+    .hgb-card {
+        width: 100% !important;
+        box-sizing: border-box !important;
+    }
+}

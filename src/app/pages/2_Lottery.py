@@ -14,8 +14,9 @@ from src.app.components.website import (
     hero,
     mini_cards,
     section_label,
-    lottery_ticket,
-    lottery_result_group_card,
+    lottery_ticket_markup,
+    lottery_result_group_markup,
+    cards_grid,
     empty_message,
     friendly_table,
     page_footer,
@@ -214,7 +215,7 @@ def grouped_recent_results(df: pd.DataFrame, limit: int = 5) -> list[pd.DataFram
 @st.cache_data(ttl=300, show_spinner=False)
 def load_lottery():
     predictions = clean_predictions(cached_table("lottery_predictions", limit=800))
-    results = prepare_results(cached_table("lottery_history", limit=1500))
+    results = prepare_results(cached_table("lottery_history", limit=None))
     return predictions, results
 
 
@@ -249,19 +250,19 @@ section_label("Featured Tickets", "Premium ticket cards for the selected game vi
 if view_predictions.empty:
     empty_message("No tickets available", "Try another game or wait for the next refresh.")
 else:
-    cols = st.columns(4, gap="medium")
-    for i, (_, row) in enumerate(view_predictions.head(8).iterrows(), 1):
-        with cols[(i - 1) % 4]:
-            lottery_ticket(row, i)
+    cards_grid(
+        [lottery_ticket_markup(row, i) for i, (_, row) in enumerate(view_predictions.head(8).iterrows(), 1)],
+        columns=4,
+    )
 
 section_label("Latest Results", "Last five grouped result cards for the selected game view.")
 if not latest_result_groups:
     empty_message("No result history", "Results are not available for this game yet.")
 else:
-    cols = st.columns(2, gap="medium")
-    for i, group in enumerate(latest_result_groups):
-        with cols[i % 2]:
-            lottery_result_group_card(group)
+    cards_grid(
+        [lottery_result_group_markup(group) for group in latest_result_groups],
+        columns=2,
+    )
 
 with st.expander("Show results table", expanded=False):
     friendly_table(

@@ -13,8 +13,8 @@ from src.app.utils.sqlite_runtime import (
     count_rows,
 )
 from src.app.components.website import (
-    hero, mini_cards, section_label, football_pick, empty_message,
-    friendly_table, page_footer,
+    hero, mini_cards, section_label, football_pick, football_pick_markup,
+    cards_grid, empty_message, friendly_table, page_footer,
 )
 
 configure_page("Football Picks", "⚽")
@@ -93,10 +93,10 @@ with left:
     if card_df.empty:
         empty_message("No match picks yet", "Football picks will populate when upcoming fixture data is available.")
     else:
-        cols = st.columns(2, gap="medium")
-        for i, (_, row) in enumerate(card_df.head(8).iterrows(), 1):
-            with cols[(i - 1) % 2]:
-                football_pick(row, i)
+        cards_grid(
+            [football_pick_markup(row, i) for i, (_, row) in enumerate(card_df.head(8).iterrows(), 1)],
+            columns=2,
+        )
 
 with right:
     section_label("Value Picks", "A second view for matches that may be worth comparing.")
