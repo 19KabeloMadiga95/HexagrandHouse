@@ -101,14 +101,18 @@ jobs:
         run: |
           python tools/check_data_freshness.py --max-lottery-lag-days 4
 
+      - name: Generate WhatsApp channel post
+        run: |
+          python tools/generate_whatsapp_channel_post.py --site-url https://hexagrandbet.com
+
       - name: Configure Git
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Stage SQLite runtime database
+      - name: Stage SQLite runtime database and social posts
         run: |
-          git add data/hexagrandhouse.db
+          git add data/hexagrandhouse.db social_posts/whatsapp_channel_today.txt social_posts/whatsapp_channel_weekly_plan.txt
 
       - name: Commit database refresh if changed
         run: |
