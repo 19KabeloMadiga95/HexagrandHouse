@@ -28,6 +28,7 @@ from typing import Any, Iterable
 DEFAULT_DB_PATH = Path("data/hexagrandhouse.db")
 DEFAULT_OUT_DIR = Path("social_posts")
 DEFAULT_SITE_URL = "https://hexagrandbet.com"
+TEXT_ENCODING = "utf-8-sig"
 
 GAME_PRIORITY = [
     "Daily Lotto",
@@ -94,7 +95,7 @@ def pct(value: Any) -> str:
 
 def today_local() -> dt.date:
     # GitHub Actions runs in UTC. South Africa is UTC+2 and has no DST.
-    return (dt.datetime.utcnow() + dt.timedelta(hours=2)).date()
+    return (dt.datetime.now(dt.UTC) + dt.timedelta(hours=2)).date()
 
 
 def week_start_monday(day: dt.date) -> dt.date:
@@ -552,7 +553,7 @@ def format_lottery_focus_block(hot: dict[str, Any]) -> str:
     game = hot.get("game") or "Lotto"
     numbers = format_numbers(hot.get("numbers") or [])
 
-    return f"🎟️ Model number focus: {game}\n Hot Number Picks: {numbers}"
+    return f"🎟️ Number focus: {game}\nRepeated in model lineups: {numbers}"
 
 # -----------------------------------------------------------------------------
 # Post builders
@@ -612,6 +613,7 @@ def main() -> int:
     parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help="SQLite database path.")
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help="Output folder for social post text files.")
     parser.add_argument("--site-url", default=DEFAULT_SITE_URL, help="Public HexaGrandBet URL.")
+    parser.add_argument("--print", dest="print_post", action="store_true", help="Print the daily post after generating it.")
     args = parser.parse_args()
 
     db_path = Path(args.db)
@@ -622,8 +624,8 @@ def main() -> int:
 
     if not db_path.exists():
         fallback = fallback_post(day, args.site_url)
-        (out_dir / "whatsapp_channel_today.txt").write_text(fallback, encoding="utf-8")
-        (out_dir / "whatsapp_channel_weekly_plan.txt").write_text(fallback, encoding="utf-8")
+        (out_dir / "whatsapp_channel_today.txt").write_text(fallback, encoding=TEXT_ENCODING)
+        (out_dir / "whatsapp_channel_weekly_plan.txt").write_text(fallback, encoding=TEXT_ENCODING)
         print(f"Database not found: {db_path}")
         print(f"Wrote fallback WhatsApp post to {out_dir}")
         return 0
@@ -635,14 +637,16 @@ def main() -> int:
     today_path = out_dir / "whatsapp_channel_today.txt"
     weekly_path = out_dir / "whatsapp_channel_weekly_plan.txt"
 
-    today_path.write_text(today_post, encoding="utf-8")
-    weekly_path.write_text(weekly_plan, encoding="utf-8")
+    today_path.write_text(today_post, encoding=TEXT_ENCODING)
+    weekly_path.write_text(weekly_plan, encoding=TEXT_ENCODING)
 
     print("Generated WhatsApp Channel content:")
     print(f"- {today_path}")
     print(f"- {weekly_path}")
-    print()
-    print(today_post)
+
+    if args.print_post:
+        print()
+        print(today_post)
 
     return 0
 
