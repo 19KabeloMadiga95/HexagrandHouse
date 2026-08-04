@@ -40,6 +40,10 @@ GAME_PRIORITY = [
 DISCLAIMER = "18+ | Analytics only | No guarantees"
 
 
+# -----------------------------------------------------------------------------
+# Generic SQLite helpers
+# -----------------------------------------------------------------------------
+
 def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -88,14 +92,6 @@ def pct(value: Any) -> str:
     return f"{num:.1f}%"
 
 
-def clean_date(value: Any) -> str:
-    text = safe_str(value, "")
-    if not text:
-        return ""
-    # Keep the date portion if stored as yyyy-mm-dd hh:mm:ss.
-    return text[:10]
-
-
 def today_local() -> dt.date:
     # GitHub Actions runs in UTC. South Africa is UTC+2 and has no DST.
     return (dt.datetime.utcnow() + dt.timedelta(hours=2)).date()
@@ -113,6 +109,10 @@ def first_existing(columns: Iterable[str], candidates: Iterable[str]) -> str | N
             return found
     return None
 
+
+# -----------------------------------------------------------------------------
+# Football section
+# -----------------------------------------------------------------------------
 
 def best_football_pick(conn: sqlite3.Connection, day: dt.date) -> dict[str, Any] | None:
     """Return best current football pick from the most public/current tables."""
@@ -180,6 +180,67 @@ def best_football_pick(conn: sqlite3.Connection, day: dt.date) -> dict[str, Any]
     return None
 
 
+def format_football_block(pick: dict[str, Any] | None) -> str:
+    if not pick:
+        return "⚽ Football: No strong pick today"
+
+    home = safe_str(pick.get("HomeTeam"), "Home")
+    away = safe_str(pick.get("AwayTeam"), "Away")
+    league = safe_str(pick.get("League"), "Football")
+    kickoff = safe_str(pick.get("KickoffTime"), "")
+    signal = safe_str(
+        pick.get("PrimaryMarketSignal")
+        or pick.get("PredictedResult")
+        or pick.get("Market"),
+        "Review pick",
+    )
+    confidence = safe_str(pick.get("ConfidenceLabel") or pick.get("ValueRating"), "Review")
+    probability = pct(
+        pick.get("ModelProbability")
+        or pick.get("ConfidenceScore")
+        or pick.get("EnsembleConfidenceScore")
+    )
+
+    fixture_line = f"⚽ {home} vs {away}"
+    context_parts = [part for part in [league, kickoff] if part]
+    context_line = " • ".join(context_parts)
+
+    lines = [
+        fixture_line,
+        f"Pick: {signal}",
+        f"Strength: {confidence} ({probability})",
+    ]
+    if context_line:
+        lines.insert(1, context_line)
+
+    return "\n".join(lines)
+
+
+# -----------------------------------------------------------------------------
+# Lottery section
+# -----------------------------------------------------------------------------
+
+def normalize_game_name(raw: Any) -> str:
+    text = safe_str(raw, "").strip()
+    if not text:
+        return ""
+    compact = re.sub(r"\s+", " ", text).strip().lower()
+
+    if "daily" in compact and "lotto" in compact:
+        return "Daily Lotto"
+    if "power" in compact:
+        return "PowerBall"
+    if "uk49" in compact and "lunch" in compact:
+        return "UK49s Lunchtime"
+    if "uk49" in compact and ("tea" in compact or "teatime" in compact):
+        return "UK49s Teatime"
+    if "uk49" in compact:
+        return "UK49s"
+    if "lotto" in compact:
+        return "Lotto"
+    return text
+
+
 def available_lottery_games(conn: sqlite3.Connection) -> list[str]:
     if not table_exists(conn, "lottery_predictions"):
         return []
@@ -209,55 +270,63 @@ def available_lottery_games(conn: sqlite3.Connection) -> list[str]:
     return ordered
 
 
-def normalize_game_name(raw: Any) -> str:
-    text = safe_str(raw, "").strip()
-    if not text:
-        return ""
-    compact = re.sub(r"\s+", " ", text).strip().lower()
+def game_filter_sql(game_col: str, game_name: str, *, main_result_only: bool = False) -> tuple[str, tuple[Any, ...]]:
+    """Return a safe WHERE fragment and params for the selected game.
 
-    if "daily" in compact and "lotto" in compact:
-        return "Daily Lotto"
-    if "power" in compact:
-        return "PowerBall"
-    if "uk49" in compact and "lunch" in compact:
-        return "UK49s Lunchtime"
-    if "uk49" in compact and ("tea" in compact or "teatime" in compact):
-        return "UK49s Teatime"
-    if "uk49" in compact:
-        return "UK49s"
-    if "lotto" in compact:
-        return "Lotto"
-    return text
-
-
-def game_filter_sql(game_col: str, game_name: str) -> tuple[str, tuple[Any, ...]]:
+    main_result_only=True is used for yesterday's result so the WhatsApp post
+    stays clean and does not list Lotto Plus / PowerBall Plus alongside the main
+    game result.
+    """
     game = game_name.lower()
+
     if game == "daily lotto":
         return f"LOWER({game_col}) LIKE ?", ("%daily%lotto%",)
+
     if game == "lotto":
+        if main_result_only:
+            return (
+                f"LOWER({game_col}) LIKE ? AND LOWER({game_col}) NOT LIKE ? AND LOWER({game_col}) NOT LIKE ?",
+                ("%lotto%", "%daily%", "%plus%"),
+            )
         return f"LOWER({game_col}) LIKE ? AND LOWER({game_col}) NOT LIKE ?", ("%lotto%", "%daily%")
+
     if game == "powerball":
+        if main_result_only:
+            return f"LOWER({game_col}) LIKE ? AND LOWER({game_col}) NOT LIKE ?", ("%power%", "%plus%")
         return f"LOWER({game_col}) LIKE ?", ("%power%",)
+
     if game == "uk49s lunchtime":
         return f"LOWER({game_col}) LIKE ? AND LOWER({game_col}) LIKE ?", ("%uk49%", "%lunch%")
+
     if game == "uk49s teatime":
         return f"LOWER({game_col}) LIKE ? AND (LOWER({game_col}) LIKE ? OR LOWER({game_col}) LIKE ?)", (
             "%uk49%",
             "%tea%",
             "%teatime%",
         )
+
     return f"LOWER({game_col}) LIKE ?", (f"%{game}%",)
 
 
 def extract_numbers_from_row(row: dict[str, Any], columns: list[str]) -> list[int]:
+    """Extract regular numbers, excluding bonus/powerball columns."""
     numbers: list[int] = []
 
-    # Preferred modern structure: N1, N2, ..., N6. Bonus is deliberately ignored
-    # for the hot regular-number list.
     number_cols = sorted(
         [col for col in columns if re.fullmatch(r"N\d+", col, flags=re.IGNORECASE)],
         key=lambda col: int(re.search(r"\d+", col).group()),
     )
+
+    if not number_cols:
+        number_cols = sorted(
+            [
+                col
+                for col in columns
+                if re.fullmatch(r"(Number|Ball|DrawNumber|RegularNumber)\d+", col, flags=re.IGNORECASE)
+            ],
+            key=lambda col: int(re.search(r"\d+", col).group()),
+        )
+
     for col in number_cols:
         try:
             value = row.get(col)
@@ -266,15 +335,39 @@ def extract_numbers_from_row(row: dict[str, Any], columns: list[str]) -> list[in
         except (TypeError, ValueError):
             pass
 
-    # Older/backtest structure: PredictedNumbers = "1,2,3,4,5".
     if not numbers:
-        for col in ["PredictedNumbers", "Numbers", "PredictionNumbers"]:
+        for col in ["PredictedNumbers", "Numbers", "PredictionNumbers", "ResultNumbers", "WinningNumbers"]:
             text = row.get(col)
             if text:
                 for part in re.findall(r"\d+", str(text)):
                     numbers.append(int(part))
 
     return numbers
+
+
+def extract_bonus_from_row(row: dict[str, Any], columns: list[str]) -> int | None:
+    bonus_col = first_existing(
+        columns,
+        [
+            "Bonus",
+            "BonusBall",
+            "BonusNumber",
+            "PowerBall",
+            "Powerball",
+            "PowerBallNumber",
+            "PB",
+        ],
+    )
+    if not bonus_col:
+        return None
+
+    try:
+        value = row.get(bonus_col)
+        if value is None or str(value).strip() == "":
+            return None
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def lottery_hot_numbers(conn: sqlite3.Connection, game_name: str, limit_rows: int = 80) -> dict[str, Any]:
@@ -321,6 +414,98 @@ def lottery_hot_numbers(conn: sqlite3.Connection, game_name: str, limit_rows: in
     return {"game": game_name, "numbers": top_three, "ticket_count": usable_rows}
 
 
+def display_game_name(raw: Any) -> str:
+    """Return a clean public game name while keeping Plus games distinct."""
+    text = safe_str(raw, "").strip()
+    if not text:
+        return "Lottery"
+
+    compact = re.sub(r"\s+", " ", text).strip().lower()
+
+    if "daily" in compact and "lotto" in compact:
+        return "Daily Lotto"
+    if "lotto" in compact and "plus" in compact and "2" in compact:
+        return "Lotto Plus 2"
+    if "lotto" in compact and "plus" in compact and "1" in compact:
+        return "Lotto Plus 1"
+    if "power" in compact and "plus" in compact:
+        return "PowerBall Plus"
+    if "power" in compact:
+        return "PowerBall"
+    if "uk49" in compact and "lunch" in compact:
+        return "UK49s Lunchtime"
+    if "uk49" in compact and ("tea" in compact or "teatime" in compact):
+        return "UK49s Teatime"
+    if "uk49" in compact:
+        return "UK49s"
+    if "lotto" in compact:
+        return "Lotto"
+
+    return text
+
+
+def result_game_sort_key(game_name: str) -> tuple[int, str]:
+    priority = [
+        "Daily Lotto",
+        "Lotto",
+        "Lotto Plus 1",
+        "Lotto Plus 2",
+        "PowerBall",
+        "PowerBall Plus",
+        "UK49s Lunchtime",
+        "UK49s Teatime",
+        "UK49s",
+    ]
+    try:
+        return (priority.index(game_name), game_name)
+    except ValueError:
+        return (999, game_name)
+
+
+def previous_day_results(conn: sqlite3.Connection, day: dt.date) -> list[dict[str, Any]]:
+    """Return all previous-day lottery results that exist in lottery_history."""
+    if not table_exists(conn, "lottery_history"):
+        return []
+
+    columns = table_columns(conn, "lottery_history")
+    date_col = first_existing(columns, ["DrawDate", "ResultDate", "Date"])
+    game_col = first_existing(columns, ["GameName", "Game", "DrawType", "GameGroup"])
+    if not date_col or not game_col:
+        return []
+
+    result_day = day - dt.timedelta(days=1)
+
+    rows = fetch_rows(
+        conn,
+        f"""
+        SELECT *
+        FROM lottery_history
+        WHERE date({date_col}) = date(?)
+        ORDER BY rowid DESC
+        """,
+        (result_day.isoformat(),),
+    )
+
+    results_by_game: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        game = display_game_name(row.get(game_col))
+        numbers = extract_numbers_from_row(row, columns)
+        bonus = extract_bonus_from_row(row, columns)
+
+        if not numbers and bonus is None:
+            continue
+
+        # Keep one clean line per game for the channel update.
+        if game not in results_by_game:
+            results_by_game[game] = {
+                "game": game,
+                "date": result_day,
+                "numbers": numbers,
+                "bonus": bonus,
+            }
+
+    return sorted(results_by_game.values(), key=lambda item: result_game_sort_key(item["game"]))
+
 def choose_game_for_day(conn: sqlite3.Connection, day: dt.date) -> str:
     games = available_lottery_games(conn) or GAME_PRIORITY[:]
     start = week_start_monday(day)
@@ -330,67 +515,67 @@ def choose_game_for_day(conn: sqlite3.Connection, day: dt.date) -> str:
     return games[(day - start).days % len(games)]
 
 
-def format_hot_numbers(numbers: list[int]) -> str:
+def format_numbers(numbers: list[int]) -> str:
     if not numbers:
         return "Not available yet"
     return " • ".join(f"{num:02d}" for num in numbers)
 
 
-def format_football_block(pick: dict[str, Any] | None) -> str:
-    if not pick:
-        return "⚽ Best football pick: No strong current fixture pick available today."
+def format_result_numbers(result: dict[str, Any] | None) -> str | None:
+    if not result:
+        return None
 
-    home = safe_str(pick.get("HomeTeam"), "Home")
-    away = safe_str(pick.get("AwayTeam"), "Away")
-    league = safe_str(pick.get("League"), "Football")
-    kickoff = safe_str(pick.get("KickoffTime"), "")
-    signal = safe_str(
-        pick.get("PrimaryMarketSignal")
-        or pick.get("PredictedResult")
-        or pick.get("Market"),
-        "Review pick",
-    )
-    confidence = safe_str(pick.get("ConfidenceLabel") or pick.get("ValueRating"), "Review")
-    probability = pct(
-        pick.get("ModelProbability")
-        or pick.get("ConfidenceScore")
-        or pick.get("EnsembleConfidenceScore")
-    )
+    numbers_text = format_numbers(result.get("numbers") or [])
+    bonus = result.get("bonus")
+    if bonus is not None:
+        game = safe_str(result.get("game"), "")
+        label = "PB" if "power" in game.lower() else "Bonus"
+        numbers_text = f"{numbers_text} | {label}: {int(bonus):02d}"
+    return numbers_text
 
-    lines = [
-        "⚽ Best football pick",
-        f"{home} vs {away}",
-        f"League: {league}",
-        f"Pick: {signal}",
-        f"Strength: {confidence} ({probability})",
-    ]
-    if kickoff:
-        lines.insert(3, f"Kickoff: {kickoff}")
+
+def format_results_block(results: list[dict[str, Any]]) -> str:
+    if not results:
+        return "🎲 Yesterday’s results: Not available yet"
+
+    lines = ["🎲 Yesterday’s results"]
+    for result in results:
+        game = safe_str(result.get("game"), "Lottery")
+        result_text = format_result_numbers(result)
+        if result_text:
+            lines.append(f"{game}: {result_text}")
+
     return "\n".join(lines)
 
+
+def format_lottery_focus_block(hot: dict[str, Any]) -> str:
+    game = hot.get("game") or "Lotto"
+    numbers = format_numbers(hot.get("numbers") or [])
+
+    return f"🎟️ Model number focus: {game}\n Hot Number Picks: {numbers}"
+
+# -----------------------------------------------------------------------------
+# Post builders
+# -----------------------------------------------------------------------------
 
 def build_daily_post(conn: sqlite3.Connection, day: dt.date, site_url: str) -> str:
     football = best_football_pick(conn, day)
     game = choose_game_for_day(conn, day)
     hot = lottery_hot_numbers(conn, game)
+    results = previous_day_results(conn, day)
 
-    generated = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-
-    return f"""🎯 HexaGrandBet Daily Pick Card
+    return f"""🎯 HexaGrandBet Daily Update
 {day.strftime('%A, %d %b %Y')}
+
+{format_results_block(results)}
 
 {format_football_block(football)}
 
-🎟️ Lotto hot numbers
-Game: {hot['game']}
-Hot 3: {format_hot_numbers(hot['numbers'])}
-Based on: current predicted ticket lineups
+{format_lottery_focus_block(hot)}
 
-View the dashboard:
-{site_url}
+View: {site_url}
 
 {DISCLAIMER}
-Generated: {generated}
 """.strip() + "\n"
 
 
@@ -401,9 +586,25 @@ def build_weekly_plan(conn: sqlite3.Connection, day: dt.date, site_url: str) -> 
         post_day = start + dt.timedelta(days=offset)
         posts.append(build_daily_post(conn, post_day, site_url))
 
-    divider = "\n\n" + "=" * 58 + "\n\n"
-    header = f"HexaGrandBet WhatsApp Channel Weekly Plan\nWeek starting: {start.isoformat()}\n\nCopy one post per day into the WhatsApp Channel.\n"
+    divider = "\n\n" + "=" * 52 + "\n\n"
+    header = (
+        f"HexaGrandBet WhatsApp Channel Weekly Plan\n"
+        f"Week starting: {start.isoformat()}\n\n"
+        "Copy one short post per day into the WhatsApp Channel.\n"
+    )
     return header + divider.join(posts) + "\n"
+
+
+def fallback_post(day: dt.date, site_url: str) -> str:
+    return f"""🎯 HexaGrandBet Daily Update
+{day.strftime('%A, %d %b %Y')}
+
+Dashboard refreshed.
+
+View: {site_url}
+
+{DISCLAIMER}
+""".strip() + "\n"
 
 
 def main() -> int:
@@ -420,16 +621,7 @@ def main() -> int:
     day = today_local()
 
     if not db_path.exists():
-        fallback = f"""🎯 HexaGrandBet Daily Update
-{day.strftime('%A, %d %b %Y')}
-
-Dashboard refresh completed, but the local database was not found for post generation.
-
-View the dashboard:
-{args.site_url}
-
-{DISCLAIMER}
-""".strip() + "\n"
+        fallback = fallback_post(day, args.site_url)
         (out_dir / "whatsapp_channel_today.txt").write_text(fallback, encoding="utf-8")
         (out_dir / "whatsapp_channel_weekly_plan.txt").write_text(fallback, encoding="utf-8")
         print(f"Database not found: {db_path}")
