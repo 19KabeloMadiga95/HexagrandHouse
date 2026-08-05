@@ -553,7 +553,7 @@ def format_lottery_focus_block(hot: dict[str, Any]) -> str:
     game = hot.get("game") or "Lotto"
     numbers = format_numbers(hot.get("numbers") or [])
 
-    return f"🎟️ Number focus: {game}\nRepeated in model lineups: {numbers}"
+    return f"🎟️ Number focus: {game}\nHot Picks: {numbers}"
 
 # -----------------------------------------------------------------------------
 # Post builders
